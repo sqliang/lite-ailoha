@@ -66,7 +66,7 @@ from deepagents import create_deep_agent
 from app.config import settings
 from app.agent.prompts import COORDINATOR_PROMPT
 from app.agent.subagents import get_all_subagents
-from app.agent.tools import STRUCTURE_TOOLS, INSIGHT_TOOLS, set_shared_image
+from app.agent.tools import STRUCTURE_TOOLS, set_shared_image
 from app.agent.llm_factory import get_text_llm
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,7 @@ class LiteAilohaAgent:
         )
         logger.info("[2/4] DeepAgent组装完成 | coordinator=%s, tools=%d, subagents=%d",
                      settings.llm_model,
-                     len(STRUCTURE_TOOLS) + len(INSIGHT_TOOLS), 3)
+                     len(STRUCTURE_TOOLS), 3)
 
     # =========================================================================
     # 流式分析 — SSE 端点的主入口
@@ -146,11 +146,10 @@ class LiteAilohaAgent:
             user_context: 用户可选的补充说明文字
 
         ============================== 返回值 ==============================
-        Yields:
-            {"type": "struct",  "data": {"participants":[...], "messages":[...]}}
-            {"type": "card",    "data": {"id":"...", "type":"create_meeting", "summary":"..."}}
-            {"type": "insight", "data": "AI 洞察文本"}
-            {"type": "error",   "data": {"code":"AGENT_ERROR", "message":"..."}}
+        Yields (阶段一):
+            {"type": "struct", "data": {"participants":[...], "messages":[...]}}
+            {"type": "card",   "data": {"id":"...", "type":"create_meeting", "summary":"..."}}
+            {"type": "error",  "data": {"code":"AGENT_ERROR", "message":"..."}}
             {"type": "done"}
 
         ============================== 数据流 ==============================
