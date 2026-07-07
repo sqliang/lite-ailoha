@@ -119,10 +119,11 @@ class LiteAilohaAgent:
         # structure_conversation 工具内部调 VISION_MODEL (豆包) — 看图
         # 子Agent 由 get_all_subagents() 注入 LLM_MODEL — 领域提取
         # =================================================================
+        # 阶段一: tools 不含 generate_insight（洞察在阶段二生成）
         self._agent = create_deep_agent(
             model=get_text_llm(),
             system_prompt=COORDINATOR_PROMPT,
-            tools=STRUCTURE_TOOLS + INSIGHT_TOOLS,
+            tools=STRUCTURE_TOOLS,  # 只有 structure_conversation
             subagents=get_all_subagents(),
         )
         logger.info("[2/4] DeepAgent组装完成 | coordinator=%s, tools=%d, subagents=%d",
@@ -216,8 +217,8 @@ def _build_coordinator_message(image_base64: str, user_context: str) -> str:
         text += f"\n\n用户补充说明: {user_context}"
 
     text += (
-        f"\n\n[系统提示] 用户已上传一张聊天截图，"
-        f"图片数据已就绪。请立即调用 structure_conversation 工具来解析截图。"
+        "\n\n[系统提示] 用户已上传一张聊天截图，"
+        "图片数据已就绪。请立即调用 structure_conversation 工具来解析截图。"
     )
 
     return text
@@ -278,16 +279,7 @@ def _parse_stream_event(event: dict) -> dict | None:
                 logger.info("  ↳ insight解析 | output_len=%d chars", out_len)
             return result
 
-    # -- Chain 结束（fallback: 如果 generate_insight 没有被显式调用）--
-    if event_type == "on_chain_end" and event.get("name") == "LangGraph":
-        output = event.get("data", {}).get("output", {})
-        messages = output.get("messages", [])
-        if messages:
-            last_msg = messages[-1]
-            content = getattr(last_msg, "content", "")
-            if content and isinstance(content, str) and len(content) > 10:
-                return {"type": "insight", "data": content}
-
+    # on_chain_end 不再转换为 insight（洞察在阶段二独立生成）
     return None
 
 

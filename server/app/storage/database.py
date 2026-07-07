@@ -102,10 +102,23 @@ async def _init_schema(db: aiosqlite.Connection):
             -- 由 Coordinator (generate_insight tool) 生成
             insight TEXT,
             -- 会话创建时间（ISO 8601 格式）
+            -- 会话状态（见 docs/DESIGN.md Session 状态机）
+            -- PENDING → STRUCTURING → STRUCTURED → EXTRACTING → READY → GENERATING → COMPLETED
+            session_state TEXT DEFAULT 'READY',
+            -- 会话创建时间（ISO 8601 格式）
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     await db.commit()
+
+    # 兼容旧数据库：新增 session_state 列
+    try:
+        await db.execute(
+            "ALTER TABLE analyze_sessions ADD COLUMN session_state TEXT DEFAULT 'READY'"
+        )
+        await db.commit()
+    except Exception:
+        pass  # 列已存在，忽略
 
 
 async def close_db():

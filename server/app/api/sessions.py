@@ -1,61 +1,170 @@
 """
-GET /api/v1/sessions/{session_id} — 查询分析会话的完整数据。
-
-用途: 事后质量评估
-  1. 获取 VISION_MODEL 产出的结构化对话（structured_conversation）
-  2. 获取 Agent 产出的动作卡片列表（cards）
-  3. 获取 AI 洞察（insight）
-  4. 将以上数据与原始截图对照，评估各环节质量
-
-数据来源: analyze_sessions 表（POST /api/v1/analyze SSE 流完成后写入）
+GET /api/v1/sessions/{id} — 查询分析会话
+POST /api/v1/sessions/{id}/insight — 阶段二: 生成洞察
 """
 import json
+import logging
 from fastapi import APIRouter, HTTPException
+from sse_starlette.sse import EventSourceResponse
 from app.storage.database import get_db
-from app.schemas.response import SessionResponse
+from app.schemas.response import SessionResponse, InsightEvent, ErrorEvent, DoneEvent
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.get("/api/v1/sessions/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str):
-    """
-    根据 session_id 获取一次分析会话的完整数据。
-
-    Returns:
-        SessionResponse:
-        - session_id: 会话 ID
-        - structured_conversation: VISION_MODEL 解析的结构化对话
-          格式: {"participants": [...], "messages": [{time, speaker, content}]}
-        - cards: Agent 识别的动作卡片列表
-          格式: [{"id": "...", "type": "create_meeting", "summary": "..."}]
-        - insight: AI 洞察文本
-        - created_at: 创建时间
-
-    Raises:
-        404: 指定的 session_id 不存在
-    """
+    """查询一次分析会话的完整数据。"""
     db = await get_db()
-
-    # 查询 analyze_sessions 表
     cursor = await db.execute(
-        "SELECT session_id, structured_conversation, cards, insight, created_at "
+        "SELECT session_id, session_state, structured_conversation, cards, insight, created_at "
         "FROM analyze_sessions WHERE session_id = ?",
-        (session_id,)
+        (session_id,),
     )
     row = await cursor.fetchone()
-
     if row is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    # 将存储的 JSON 字符串解析为 Python 对象
-    structured = json.loads(row["structured_conversation"]) if row["structured_conversation"] else None
-    cards = json.loads(row["cards"]) if row["cards"] else []
-
     return SessionResponse(
         session_id=row["session_id"],
-        structured_conversation=structured,
-        cards=cards,
+        session_state=row["session_state"] or "READY",
+        structured_conversation=json.loads(row["structured_conversation"]) if row["structured_conversation"] else None,
+        cards=json.loads(row["cards"]) if row["cards"] else [],
         insight=row["insight"],
         created_at=row["created_at"],
     )
+
+
+@router.post("/api/v1/sessions/{session_id}/insight")
+async def generate_insight(session_id: str):
+    """阶段二: 基于用户确认结果生成洞察。
+
+    从 DB 查询阶段一数据 + 用户确认/取消记录，构造消息送入 Agent。
+    """
+    db = await get_db()
+
+    # 查询 session
+    cursor = await db.execute(
+        "SELECT session_id, session_state, structured_conversation, cards "
+        "FROM analyze_sessions WHERE session_id = ?",
+        (session_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if row["session_state"] in ("PENDING", "STRUCTURING", "STRUCTURE_FAILED"):
+        raise HTTPException(status_code=400, detail="阶段一未完成")
+
+    # 查询用户确认/取消记录
+    cards = json.loads(row["cards"]) if row["cards"] else []
+    confirmed_ids = [c["id"] for c in cards]
+    confirmed_cursor = await db.execute(
+        "SELECT id, type, summary, status FROM confirmed_actions WHERE id IN ({})".format(
+            ",".join("?" * len(confirmed_ids))
+        ),
+        confirmed_ids,
+    ) if confirmed_ids else None
+
+    confirmed = []
+    cancelled = []
+    if confirmed_cursor:
+        async for cr in confirmed_cursor:
+            if cr["status"] == "confirmed":
+                confirmed.append(dict(cr))
+            else:
+                cancelled.append(dict(cr))
+
+    # 构建 insight 消息
+    from app.agent import LiteAilohaAgent
+    agent = LiteAilohaAgent()
+    agent._ensure_initialized()
+
+    message = _build_insight_message(
+        structured=row["structured_conversation"],
+        confirmed=confirmed,
+        cancelled=cancelled,
+    )
+
+    async def event_stream():
+        event_id = 0
+        try:
+            # 更新状态
+            await db.execute(
+                "UPDATE analyze_sessions SET session_state='GENERATING' WHERE session_id=?",
+                (session_id,),
+            )
+            await db.commit()
+
+            async for event in agent._agent.astream_events(
+                {"messages": [{"role": "user", "content": message}]},
+                version="v2",
+            ):
+                # 只监听 generate_insight tool
+                if event.get("event") == "on_tool_end" and event.get("name") == "generate_insight":
+                    event_id += 1
+                    output = event.get("data", {}).get("output", "")
+                    if hasattr(output, "content"):
+                        output = output.content
+                    insight_text = str(output) if output else ""
+
+                    insight_event = InsightEvent(
+                        session_state="GENERATING",
+                        insight=insight_text,
+                    )
+                    yield {"event": "insight", "id": str(event_id), "data": insight_event.model_dump_json()}
+
+                    # 持久化 insight
+                    await db.execute(
+                        "UPDATE analyze_sessions SET insight=?, session_state='COMPLETED' WHERE session_id=?",
+                        (insight_text, session_id),
+                    )
+                    await db.commit()
+                    logger.info("Insight persisted for session %s", session_id)
+
+            event_id += 1
+            done = DoneEvent(session_state="COMPLETED")
+            yield {"event": "done", "id": str(event_id), "data": done.model_dump_json()}
+
+        except Exception:
+            logger.exception("Insight generation failed for session %s", session_id)
+            event_id += 1
+            err = ErrorEvent(code="INSIGHT_ERROR", message="洞察生成失败")
+            yield {"event": "error", "id": str(event_id), "data": err.model_dump_json()}
+
+    return EventSourceResponse(event_stream())
+
+
+def _build_insight_message(structured: str | None, confirmed: list[dict], cancelled: list[dict]) -> str:
+    """构造阶段二的 Coordinator 消息。"""
+    msg = """## 任务: 基于用户决策生成洞察建议
+
+你之前已经完成了聊天截图的结构化分析和卡片提取。现在用户已经查看了卡片并做出了决策。
+
+"""
+    if structured:
+        msg += f"### 结构化对话\n```json\n{structured}\n```\n\n"
+
+    msg += "### 用户已确认的卡片\n"
+    if confirmed:
+        for c in confirmed:
+            msg += f"- [{c['type']}] {c['summary']}\n"
+    else:
+        msg += "- (无)\n"
+
+    msg += "\n### 用户已取消的卡片\n"
+    if cancelled:
+        for c in cancelled:
+            msg += f"- [{c['type']}] {c['summary']}\n"
+    else:
+        msg += "- (无)\n"
+
+    msg += """
+请调用 generate_insight 工具，基于:
+1. 用户确认了哪些卡片
+2. 用户取消了哪些卡片
+3. 原始结构化对话上下文
+
+生成有帮助的洞察和建议。输出中文。
+"""
+    return msg

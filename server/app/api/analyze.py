@@ -163,10 +163,16 @@ async def analyze(request: AnalyzeRequest):
     logger.info("[2/7] 输入验证通过")
 
     # =========================================================================
-    # [3/7] 生成会话 ID — UUID4，用于 GET /api/v1/sessions/{id} 事后查询
+    # [3/7] 生成会话 ID，创建数据库记录（PENDING 状态）
     # =========================================================================
     session_id = str(uuid.uuid4())
     logger.info("[3/7] 生成会话ID | session_id=%s", session_id)
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO analyze_sessions (session_id, session_state) VALUES (?, 'PENDING')",
+        (session_id,),
+    )
+    await db.commit()
 
     # =========================================================================
     # event_stream — 核心 SSE 异步生成器
@@ -208,19 +214,25 @@ async def analyze(request: AnalyzeRequest):
                 # =============================================================
                 match event_type:
                     # --- 结构化对话 ---
-                    # VISION_MODEL 通过 structure_conversation tool 返回的结果
-                    # 数据写入 structured 累积器，同时通过 SSE 推送给客户端
                     case "struct":
                         structured = event["data"]
                         struct_event = StructEvent(
+                            session_state="STRUCTURED",
                             participants=structured.get("participants", []),
                             messages=structured.get("messages", []),
                         )
                         yield {
                             "event": "struct",
-                            "id": str(event_id),  # id 必须为字符串
+                            "id": str(event_id),
                             "data": struct_event.model_dump_json(),
                         }
+                        # 持久化 structured_conversation + 更新状态
+                        db = await get_db()
+                        await db.execute(
+                            "UPDATE analyze_sessions SET structured_conversation=?, session_state='STRUCTURED' WHERE session_id=?",
+                            (json.dumps(structured, ensure_ascii=False), session_id),
+                        )
+                        await db.commit()
                         logger.info("[5/7] SSE事件→struct | participants=%d, messages=%d",
                                      len(structured.get("participants", [])),
                                      len(structured.get("messages", [])))
@@ -298,20 +310,15 @@ async def analyze(request: AnalyzeRequest):
             # =================================================================
             try:
                 db = await get_db()
+                state = "EXTRACTED" if cards else "NO_CARDS"
                 await db.execute(
-                    "INSERT INTO analyze_sessions "
-                    "(session_id, structured_conversation, cards, insight) "
-                    "VALUES (?, ?, ?, ?)",
-                    (
-                        session_id,
-                        json.dumps(structured, ensure_ascii=False) if structured else None,
-                        json.dumps(cards, ensure_ascii=False) if cards else "[]",
-                        insight_text or None,
-                    ),
+                    "UPDATE analyze_sessions SET cards=?, session_state=? WHERE session_id=?",
+                    (json.dumps(cards, ensure_ascii=False) if cards else "[]",
+                     state, session_id),
                 )
                 await db.commit()
-                logger.info("[6/7] 持久化完成 | session_id=%s, cards=%d, insight=%dchars",
-                             session_id, len(cards), len(insight_text))
+                logger.info("[6/7] 持久化完成 | session_id=%s, cards=%d, state=%s",
+                             session_id, len(cards), state)
             except Exception as db_err:
                 logger.error("[6/7] 持久化失败 | session_id=%s, error=%s", session_id, db_err)
 

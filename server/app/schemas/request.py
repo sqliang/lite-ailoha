@@ -32,6 +32,9 @@ class ActionRequest(BaseModel):
 
     字段说明:
     - session_id: 关联的分析会话 ID
-                  用于将用户的操作（确认/取消）关联到具体的分析会话
+    - type: 卡片类型（create_meeting / create_contact 等）
+    - summary: 卡片摘要文本
     """
-    session_id: str = Field(default="", description="分析会话 ID，用于关联操作到具体会话")
+    session_id: str = Field(default="", description="分析会话 ID")
+    type: str = Field(default="", description="卡片类型")
+    summary: str = Field(default="", description="卡片摘要")
