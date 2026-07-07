@@ -6,11 +6,29 @@ import json
 import logging
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
+from deepagents import create_deep_agent
 from app.storage.database import get_db
 from app.schemas.response import SessionResponse, InsightEvent, ErrorEvent, DoneEvent
+from app.agent.llm_factory import get_text_llm
+from app.agent.tools import INSIGHT_TOOLS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# 阶段二 insight agent 单例（懒初始化，避免每次请求重新创建）
+_insight_agent = None
+
+
+def _get_insight_agent():
+    global _insight_agent
+    if _insight_agent is None:
+        _insight_agent = create_deep_agent(
+            model=get_text_llm(),
+            system_prompt="你是一个智能助理。当用户要求生成洞察时，调用 generate_insight 工具。",
+            tools=INSIGHT_TOOLS,
+            subagents=[],
+        )
+    return _insight_agent
 
 
 @router.get("/api/v1/sessions/{session_id}", response_model=SessionResponse)
@@ -38,10 +56,7 @@ async def get_session(session_id: str):
 
 @router.post("/api/v1/sessions/{session_id}/insight")
 async def generate_insight(session_id: str):
-    """阶段二: 基于用户确认结果生成洞察。
-
-    从 DB 查询阶段一数据 + 用户确认/取消记录，构造消息送入 Agent。
-    """
+    """阶段二: 基于用户确认结果生成洞察。"""
     db = await get_db()
 
     # 查询 session
@@ -59,33 +74,27 @@ async def generate_insight(session_id: str):
     # 查询用户确认/取消记录
     cards = json.loads(row["cards"]) if row["cards"] else []
     confirmed_ids = [c["id"] for c in cards]
-    confirmed_cursor = await db.execute(
-        "SELECT id, type, summary, status FROM confirmed_actions WHERE id IN ({})".format(
-            ",".join("?" * len(confirmed_ids))
-        ),
-        confirmed_ids,
-    ) if confirmed_ids else None
-
     confirmed = []
     cancelled = []
-    if confirmed_cursor:
+
+    if confirmed_ids:
+        placeholders = ",".join("?" for _ in confirmed_ids)
+        confirmed_cursor = await db.execute(
+            f"SELECT id, type, summary, status FROM confirmed_actions WHERE id IN ({placeholders})",
+            confirmed_ids,
+        )
         async for cr in confirmed_cursor:
             if cr["status"] == "confirmed":
                 confirmed.append(dict(cr))
             else:
                 cancelled.append(dict(cr))
 
-    # 构建阶段二 Agent（tools 只有 generate_insight）
-    from deepagents import create_deep_agent
-    from app.agent.llm_factory import get_text_llm
-    from app.agent.tools import INSIGHT_TOOLS
-
-    insight_agent = create_deep_agent(
-        model=get_text_llm(),
-        system_prompt="你是一个智能助理。当用户要求生成洞察时，调用 generate_insight 工具。",
-        tools=INSIGHT_TOOLS,
-        subagents=[],
+    # 更新状态为 GENERATING
+    await db.execute(
+        "UPDATE analyze_sessions SET session_state='GENERATING' WHERE session_id=?",
+        (session_id,),
     )
+    await db.commit()
 
     message = _build_insight_message(
         structured=row["structured_conversation"],
@@ -95,18 +104,12 @@ async def generate_insight(session_id: str):
 
     async def event_stream():
         event_id = 0
+        insight_text = ""
         try:
-            await db.execute(
-                "UPDATE analyze_sessions SET session_state='GENERATING' WHERE session_id=?",
-                (session_id,),
-            )
-            await db.commit()
-
-            async for event in insight_agent.astream_events(
+            async for event in _get_insight_agent().astream_events(
                 {"messages": [{"role": "user", "content": message}]},
                 version="v2",
             ):
-                # 只监听 generate_insight tool
                 if event.get("event") == "on_tool_end" and event.get("name") == "generate_insight":
                     event_id += 1
                     output = event.get("data", {}).get("output", "")
@@ -120,13 +123,15 @@ async def generate_insight(session_id: str):
                     )
                     yield {"event": "insight", "id": str(event_id), "data": insight_event.model_dump_json()}
 
-                    # 持久化 insight
-                    await db.execute(
-                        "UPDATE analyze_sessions SET insight=?, session_state='COMPLETED' WHERE session_id=?",
-                        (insight_text, session_id),
-                    )
-                    await db.commit()
-                    logger.info("Insight persisted for session %s", session_id)
+            # SSE 流结束后持久化 insight
+            if insight_text:
+                db2 = await get_db()
+                await db2.execute(
+                    "UPDATE analyze_sessions SET insight=?, session_state='COMPLETED' WHERE session_id=?",
+                    (insight_text, session_id),
+                )
+                await db2.commit()
+                logger.info("Insight persisted for session %s", session_id)
 
             event_id += 1
             done = DoneEvent(session_state="COMPLETED")

@@ -28,7 +28,7 @@
 │          ▼                                                        │
 │  ┌────────────────────────────────────────────────────────────┐  │
 │  │                 Dual-Model Agent Pipeline                   │  │
-│  │  VISION_MODEL (Coordinator) → 聊天截图 → 结构化对话 JSON    │  │
+│  │  LLM_MODEL (Coordinator/DeepSeek) → 规划分发 → 结构化 JSON   │  │
 │  │  LLM_MODEL (3 Subagents) → 结构化 JSON → action cards      │  │
 │  │  SSE: event:struct → event:card × N → event:insight → done │  │
 │  └────────────────────────────────────────────────────────────┘  │

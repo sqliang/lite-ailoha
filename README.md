@@ -96,9 +96,10 @@ lite-ailoha/
 │   │   ├── api/                # 4 个 API 端点 + health
 │   │   ├── agent/              # DeepAgents 管道
 │   │   │   ├── deep_agent.py   # LiteAilohaAgent（双模型）
-│   │   │   ├── llm_factory.py  # ChatOpenAI 工厂（禁用代理）
-│   │   │   ├── prompts.py      # 5 个系统提示词
-│   │   │   ├── subagents.py    # meeting/contact/reminder 子Agent
+│   │   │   ├── llm_factory.py  # ChatOpenAI 工厂 + 单例管理
+│   │   │   ├── prompts/        # 系统提示词（一个 Agent 一个文件）
+│   │   │   ├── subagents/      # 子Agent 定义（一个领域一个文件）
+│   │   │   ├── validators/     # JSON 输出校验 + 重试
 │   │   │   └── tools/          # 7 个 tool 函数
 │   │   ├── schemas/            # Pydantic 请求/响应模型
 │   │   ├── services/           # MVP mock（日历/联系人/洞察）

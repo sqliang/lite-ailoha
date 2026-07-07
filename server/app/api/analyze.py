@@ -194,7 +194,6 @@ async def analyze(request: AnalyzeRequest):
         # --- 累积器：流式过程中收集数据，流完成后统一写入数据库 ---
         structured: dict | None = None  # 结构化对话（struct 事件数据）
         cards: list[dict] = []          # 所有 ActionCard 的 dict 列表
-        insight_text: str = ""          # AI 洞察文本
 
         try:
             logger.info("[4/7] 开始SSE流式分析 | session_id=%s", session_id)
@@ -226,13 +225,6 @@ async def analyze(request: AnalyzeRequest):
                             "id": str(event_id),
                             "data": struct_event.model_dump_json(),
                         }
-                        # 持久化 structured_conversation + 更新状态
-                        db = await get_db()
-                        await db.execute(
-                            "UPDATE analyze_sessions SET structured_conversation=?, session_state='STRUCTURED' WHERE session_id=?",
-                            (json.dumps(structured, ensure_ascii=False), session_id),
-                        )
-                        await db.commit()
                         logger.info("[5/7] SSE事件→struct | participants=%d, messages=%d",
                                      len(structured.get("participants", [])),
                                      len(structured.get("messages", [])))
@@ -258,18 +250,16 @@ async def analyze(request: AnalyzeRequest):
                         logger.info("[5/7] SSE事件→card | type=%s, summary=%s",
                                      card_data["type"], card_data["summary"][:50])
 
-                    # --- AI 洞察 ---
-                    # generate_insight tool 的结果，纯文本
+                    # --- AI 洞察（阶段一不再生成，保留兼容旧事件） ---
                     case "insight":
-                        insight_text = event["data"]
-                        insight_event = InsightEvent(insight=insight_text)
+                        insight_event = InsightEvent(insight=str(event["data"]))
                         yield {
                             "event": "insight",
                             "id": str(event_id),
                             "data": insight_event.model_dump_json(),
                         }
                         logger.info("[5/7] SSE事件→insight | text_len=%dchars",
-                                     len(insight_text))
+                                     len(str(event["data"])))
 
                     # --- 错误事件 ---
                     # Agent 内部错误（LLM 调用失败、tool 执行异常等）
@@ -297,23 +287,15 @@ async def analyze(request: AnalyzeRequest):
                         logger.info("[5/7] SSE事件→done | total_events=%d", event_id)
 
             # =================================================================
-            # [6/7] SSE 流完成 → 持久化到 analyze_sessions 表
-            #
-            # 写入内容:
-            #   session_id            — UUID，后续查询的主键
-            #   structured_conversation — VISION_MODEL 的原始输出 JSON
-            #   cards                 — 所有 ActionCard 的 JSON 数组
-            #   insight               — AI 洞察文本
-            #
-            # 写入时机: 流结束后（不阻塞 SSE 推送）
-            # 失败处理: 日志记录，不影响已推送的 SSE 事件
+            # [6/7] SSE 流完成 → 统一 UPDATE 所有累积数据到 analyze_sessions
             # =================================================================
             try:
                 db = await get_db()
                 state = "EXTRACTED" if cards else "NO_CARDS"
                 await db.execute(
-                    "UPDATE analyze_sessions SET cards=?, session_state=? WHERE session_id=?",
-                    (json.dumps(cards, ensure_ascii=False) if cards else "[]",
+                    "UPDATE analyze_sessions SET structured_conversation=?, cards=?, session_state=? WHERE session_id=?",
+                    (json.dumps(structured, ensure_ascii=False) if structured else None,
+                     json.dumps(cards, ensure_ascii=False) if cards else "[]",
                      state, session_id),
                 )
                 await db.commit()
