@@ -22,7 +22,7 @@ struct ActionCardsApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AnalysisView()
                 // 将 Core Data 托管上下文注入环境，供子视图持久化使用
                 .environment(\.managedObjectContext, persistence.container.viewContext)
         }

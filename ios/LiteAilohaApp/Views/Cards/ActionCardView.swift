@@ -1,11 +1,5 @@
 import SwiftUI
 
-// MARK: - 动作卡片组件 + Toast 提示组件
-///
-/// 本文件包含两个可复用的 UI 组件：
-/// - ActionCardView：可交互的动作卡片，支持确认/取消操作
-/// - ToastView：浮动提示条，支持成功/失败两种样式
-
 // MARK: - 动作卡片
 
 /// 单张动作卡片的 SwiftUI 视图。
@@ -77,22 +71,7 @@ struct ActionCardView: View {
 
     // MARK: - 辅助属性
 
-    /// 根据卡片类型返回对应的 SF Symbol 图标名称。
-    ///
-    /// 图标映射：
-    /// - `create_meeting` → `calendar.badge.plus`
-    /// - `add_contact` → `person.crop.circle.badge.plus`
-    /// - `set_reminder` → `bell.badge`
-    /// - 其他 → `square.and.pencil`（通用编辑图标）
-    private var icon: String {
-        switch card.type {
-        case "create_meeting": return "calendar.badge.plus"
-        case "create_contact": return "person.crop.circle.badge.plus"
-        case "update_contact": return "person.text.rectangle"
-        case "create_reminder": return "bell.badge"
-        default: return "square.and.pencil"
-        }
-    }
+    private var icon: String { CardIconHelper.icon(for: card.type) }
 
     /// 状态徽章视图。
     ///
@@ -111,36 +90,5 @@ struct ActionCardView: View {
             Label("已取消", systemImage: "xmark.circle.fill")
                 .font(.caption).foregroundStyle(.red)
         }
-    }
-}
-
-// MARK: - Toast 提示
-
-/// 浮动 Toast 提示视图，用于在屏幕顶部显示操作反馈。
-///
-/// 使用示例：
-/// ```swift
-/// if let toast = vm.toastMessage {
-///     ToastView(message: toast, success: vm.toastIsSuccess)
-/// }
-/// ```
-///
-/// 视觉风格：
-/// - 成功：绿色前景色 + 对勾图标 + 毛玻璃背景
-/// - 失败：红色前景色 + 警告三角图标 + 毛玻璃背景
-struct ToastView: View {
-    /// 提示消息文本
-    let message: String
-    /// `true` 为成功样式（绿色对勾），`false` 为失败样式（红色警告）
-    let success: Bool
-
-    var body: some View {
-        Label(message, systemImage: success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-            .font(.subheadline)
-            .padding(.horizontal, 16).padding(.vertical, 10)
-            .background(.ultraThinMaterial)    // 毛玻璃半透明背景
-            .foregroundStyle(success ? .green : .red)
-            .clipShape(Capsule())              // 胶囊形状
-            .shadow(radius: 6)                 // 柔和投影
     }
 }

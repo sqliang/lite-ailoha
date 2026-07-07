@@ -59,8 +59,11 @@ final class AnalysisViewModel: ObservableObject {
     @Published var structure: StructPayload?
 
     /// 是否有可展示的结构化对话数据。
-    /// 用于控制「结构化对话」折叠区域的显隐。
     var hasStructure: Bool { structure != nil && !(structure?.messages.isEmpty ?? true) }
+
+    /// 当前会话状态（PENDING → STRUCTURING → ... → COMPLETED）。
+    /// 由 SSE 事件的 session_state 字段更新，驱动 StatusSection 展示。
+    @Published var sessionState: String?
 
     /// Toast 浮动提示消息文本。
     /// 非 nil 时显示 Toast，nil 时隐藏。
@@ -106,7 +109,7 @@ final class AnalysisViewModel: ObservableObject {
                 // 逐事件消费 SSE 流，每个事件驱动一次 UI 更新
                 for try await event in service.analyze(imageData: imageData, userContext: userContext) {
                     switch event {
-                    case .structure(let sp): structure = sp
+                    case .structure(let sp): structure = sp; sessionState = sp.sessionState
                     case .card(let card): cards.append(card)
                     case .insight(let text): insight = text
                     case .error(let p): showToast(p.message, success: false)
