@@ -30,6 +30,12 @@ env/
 # OS
 .DS_Store
 
+# Test artifacts
+test*.png
+test*.jpg
+test*_sse_raw.txt
+test*_structured.txt
+
 # === Xcode ===
 xcuserdata/
 *.hmap
