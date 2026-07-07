@@ -17,9 +17,6 @@ env/
 # Environment files
 .env
 
-# Claude Code built-in skills (not project code)
-.claude/skills/
-
 # Database files
 *.db
 *.db-shm
