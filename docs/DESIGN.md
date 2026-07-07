@@ -769,16 +769,370 @@ agent/deep_agent.py:
 
 ---
 
-## 11. 实施顺序建议
+## 11. 重构实施方案
 
-| 步骤 | 文件 | 内容 |
-|:--:|------|------|
-| 1 | `llm_factory.py` | LLM 单例管理 |
-| 2 | `structure.py`, `subagents.py`, `deep_agent.py` | 统一用工厂 |
-| 3 | `deep_agent.py` | Coordinator 改 LLM_MODEL，删 `_text_llm` |
-| 4 | `database.py` | 加 `session_state` 列 |
-| 5 | `schemas/response.py` | 加 `session_state` 字段 |
-| 6 | `analyze.py` | SSE 加状态，去掉 insight |
-| 7 | `actions.py` | 持久化 |
-| 8 | `sessions.py` | 新 insight 端点 |
-| 9 | 全链路测试 | 端到端验证 |
+> 分 4 个阶段执行，每阶段完成后可独立验证。修改原则：小步快走，每步可回滚。
+
+### 阶段 A：LLM 实例统一（不影响功能）
+
+#### A1. 重构 `llm_factory.py`
+
+**目标**：提供 `get_vision_llm()` 和 `get_text_llm()` 两个模块级单例，统一管理所有 ChatOpenAI 实例。
+
+**修改前**：
+```python
+def create_chat_openai(model, api_key, base_url, temperature=0.3):
+    return ChatOpenAI(model=model, api_key=api_key, base_url=base_url,
+                      temperature=temperature,
+                      http_async_client=_get_async_client())
+```
+
+**修改后**：
+```python
+_vision_llm = None
+_text_llm = None
+
+def get_vision_llm() -> ChatOpenAI:
+    """VISION_MODEL 单例 — structure_conversation 工具内部使用"""
+    global _vision_llm
+    if _vision_llm is None:
+        _vision_llm = create_chat_openai(
+            model=settings.vision_model,
+            api_key=settings.vision_api_key,
+            base_url=settings.vision_base_url,
+        )
+    return _vision_llm
+
+def get_text_llm() -> ChatOpenAI:
+    """LLM_MODEL 单例 — Coordinator + 子Agent + 洞察 共用"""
+    global _text_llm
+    if _text_llm is None:
+        _text_llm = create_chat_openai(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+        )
+    return _text_llm
+
+# 保留 create_chat_openai 作为内部实现
+def create_chat_openai(model, api_key, base_url, temperature=0.3):
+    ...
+```
+
+#### A2. 重构 `tools/structure.py`
+
+**目标**：删除独立 `_vision_llm`，改用 `get_vision_llm()`。
+
+**修改前**：
+```python
+from langchain_openai import ChatOpenAI
+from app.config import settings
+
+_vision_llm = None
+
+def _get_vision_llm():
+    global _vision_llm
+    if _vision_llm is None:
+        _vision_llm = ChatOpenAI(model=settings.vision_model, ...)
+    return _vision_llm
+```
+
+**修改后**：
+```python
+from app.agent.llm_factory import get_vision_llm
+# 删除 _vision_llm 和 _get_vision_llm()，所有引用处改为 get_vision_llm()
+```
+
+**修改位置**：`structure_conversation` 函数中 `_get_vision_llm().invoke(messages)` → `get_vision_llm().invoke(messages)`
+
+#### A3. 重构 `subagents/`
+
+**目标**：拆分 `subagents.py` 为 `subagents/` 目录，统一用 `get_text_llm()`。
+
+**第一步：创建目录结构**
+
+```
+subagents/
+├── __init__.py     # 导出 get_all_subagents()
+├── meeting.py      # meeting-agent 定义
+├── contact.py      # contact-agent 定义
+└── reminder.py     # reminder-agent 定义
+```
+
+**第二步：`subagents/__init__.py`**
+
+```python
+"""子 Agent 定义 — 一个领域一个文件"""
+from app.agent.subagents.meeting import meeting_subagent
+from app.agent.subagents.contact import contact_subagent
+from app.agent.subagents.reminder import reminder_subagent
+from app.agent.llm_factory import get_text_llm
+
+def get_all_subagents() -> list[dict]:
+    llm = get_text_llm()
+    return [
+        {**meeting_subagent, "model": llm},
+        {**contact_subagent, "model": llm},
+        {**reminder_subagent, "model": llm},
+    ]
+
+__all__ = ["get_all_subagents"]
+```
+
+**第三步：`subagents/meeting.py`**
+
+```python
+"""meeting-agent：从结构化对话中识别会议安排"""
+from app.agent.tools import MEETING_TOOLS
+from app.agent.prompts import MEETING_SUBAGENT_PROMPT
+
+meeting_subagent = {
+    "name": "meeting-agent",
+    "description": (
+        "专门从结构化对话 JSON 中识别会议安排。"
+        "当需要判断对话中是否包含会议创建需求时使用此 Agent。"
+    ),
+    "system_prompt": MEETING_SUBAGENT_PROMPT,
+    "tools": MEETING_TOOLS,
+    # model 由 get_all_subagents() 统一注入
+}
+```
+
+**第四步**：`contact.py` 和 `reminder.py` 同理。
+
+**第五步**：删除旧的 `subagents.py`。
+
+#### A4. 重构 `deep_agent.py`
+
+**目标**：改用 `get_vision_llm()` / `get_text_llm()`；删除 `_text_llm`；Coordinator 改用 LLM_MODEL。
+
+**修改前**：
+```python
+from app.agent.llm_factory import create_chat_openai
+
+def _ensure_initialized(self):
+    self._vision_llm = create_chat_openai(
+        model=settings.vision_model, ...)
+    self._text_llm = create_chat_openai(       # ← 死代码
+        model=settings.llm_model, ...)
+    self._agent = create_deep_agent(
+        model=self._vision_llm, ...)           # ← Coordinator 用 VISION_MODEL
+```
+
+**修改后**：
+```python
+from app.agent.llm_factory import get_text_llm
+
+def _ensure_initialized(self):
+    self._agent = create_deep_agent(
+        model=get_text_llm(),                  # Coordinator 用 LLM_MODEL
+        system_prompt=COORDINATOR_PROMPT,
+        tools=STRUCTURE_TOOLS + INSIGHT_TOOLS,
+        subagents=get_all_subagents(),
+    )
+```
+
+**关键变化**：
+- 删除 `self._vision_llm` 和 `self._text_llm` 的定义
+- `create_deep_agent(model=...)` 从 VISION_MODEL 改为 LLM_MODEL
+- `get_all_subagents()` 内部已通过 `get_text_llm()` 为子 Agent 注入模型
+- structure_conversation 工具内部通过 `get_vision_llm()` 获取视觉模型
+
+**验证**：`make run` + curl 测试，确认管道正常运行。
+
+---
+
+### 阶段 B：Session 状态机（新增概念，不影响现有流程）
+
+#### B1. 数据库迁移
+
+```sql
+-- 新增 session_state 列
+ALTER TABLE analyze_sessions ADD COLUMN session_state TEXT DEFAULT 'READY';
+
+-- 已有记录默认标记为 READY（兼容旧数据）
+UPDATE analyze_sessions SET session_state = 'READY' WHERE session_state IS NULL;
+```
+
+**实现方式**：在 `database.py` 的 `_init_schema()` 中增加 ALTER TABLE 逻辑，用 `try/except` 处理列已存在的情况。
+
+#### B2. 更新 `schemas/response.py`
+
+每个 SSE 事件模型加 `session_state` 字段：
+
+```python
+class StructEvent(BaseModel):
+    event: str = "struct"
+    session_state: str = "STRUCTURED"      # 新增
+    participants: list[str]
+    messages: list[dict]
+
+class CardEvent(BaseModel):
+    event: str = "card"
+    session_state: str = "EXTRACTING"      # 新增
+    card: ActionCard
+
+class InsightEvent(BaseModel):
+    event: str = "insight"
+    session_state: str = "GENERATING"      # 新增
+    insight: str
+
+class DoneEvent(BaseModel):
+    event: str = "done"
+    session_state: str = "READY"           # 新增（阶段一）/ "COMPLETED"（阶段二）
+```
+
+#### B3. 更新 `analyze.py` SSE 事件
+
+每个 yield 的 data JSON 中加入 `session_state`：
+
+```python
+# struct 事件
+yield {
+    "event": "struct",
+    "id": str(event_id),
+    "data": struct_event.model_dump_json(),  # 已含 session_state
+}
+
+# 持久化时也更新 session_state
+await db.execute(
+    "UPDATE analyze_sessions SET session_state = ? WHERE session_id = ?",
+    ("STRUCTURED", session_id),
+)
+```
+
+**验证**：SSE 输出的 data 中确认出现 `session_state` 字段。
+
+---
+
+### 阶段 C：两阶段拆分（功能变更）
+
+#### C1. `analyze.py` — 去掉 insight 生成
+
+**修改前**：Coordinator 的 prompt 驱动它在所有子 Agent 完成后调用 `generate_insight`
+
+**修改后**：Coordinator 在阶段一**不调用** `generate_insight`。
+
+**实现方式**：修改 `COORDINATOR_PROMPT`，去掉第三步"生成洞察"，改为：
+```
+### 第三步: 输出总结
+在所有子 Agent 返回结果后，输出总结信息，告知用户请查看卡片并确认。
+```
+
+同时从 `stream_analyze()` 中删除对 `generate_insight` on_tool_end 的监听（或保留但不触发）。
+
+#### C2. `actions.py` — 持久化用户决策
+
+```python
+@router.post("/api/v1/actions/{action_id}/confirm")
+async def confirm_action(action_id: str, _body: ActionRequest):
+    db = await get_db()
+    await db.execute(
+        "INSERT OR REPLACE INTO confirmed_actions (id, type, summary, status) "
+        "VALUES (?, ?, ?, ?)",
+        (action_id, _body.type or "", _body.summary or "", "confirmed"),
+    )
+    await db.commit()
+    return ActionResponse(action_id=action_id, status="confirmed", ...)
+```
+
+#### C3. `sessions.py` — 新增阶段二端点
+
+```python
+@router.post("/api/v1/sessions/{session_id}/insight")
+async def generate_insight(session_id: str):
+    # 1. 查询阶段一数据
+    session = await _get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if session["session_state"] in ("PENDING", "STRUCTURING", "STRUCTURE_FAILED"):
+        raise HTTPException(400, "阶段一未完成，无法生成洞察")
+    
+    # 2. 查询用户确认的卡片
+    cards = json.loads(session["cards"] or "[]")
+    confirmed = await _get_confirmed_actions([c["id"] for c in cards])
+    
+    # 3. 构造阶段二消息
+    message = _build_insight_message(session, confirmed)
+    
+    # 4. 送入同一个 Agent，继续 astream_events
+    async def event_stream():
+        yield {"event": "session_state", "data": json.dumps({"state": "GENERATING"})}
+        async for event in _get_agent().stream_analyze(message):
+            if event["type"] == "insight":
+                yield {"event": "insight", "id": ..., "data": ...}
+        yield {"event": "done", ...}
+    
+    return EventSourceResponse(event_stream())
+```
+
+**验证**：阶段一完成后，用 curl 调用阶段二端点，确认返回 insight。
+
+---
+
+### 阶段 D：清理与测试
+
+#### D1. 清理
+
+- 删除旧的 `subagents.py`（已拆分为 `subagents/`）
+- 删除 `deep_agent.py` 中无用的 `self._vision_llm`、`self._text_llm`
+- 删除 `tools/structure.py` 中独立 `_vision_llm`
+
+#### D2. 全链路测试
+
+```bash
+# 步骤 1: 启动服务端
+make run
+
+# 步骤 2: 阶段一 — 上传图片
+curl -X POST http://localhost:8080/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"image":"<base64>","user_context":"测试"}' --no-buffer
+
+# 预期 SSE:
+#   event:struct (session_state=STRUCTURED)
+#   event:card × N (session_state=EXTRACTING)
+#   event:done (session_state=READY)
+
+# 步骤 3: 查看 session 状态
+curl http://localhost:8080/api/v1/sessions/{session_id}
+# 预期: session_state=READY
+
+# 步骤 4: 用户确认/取消
+curl -X POST http://localhost:8080/api/v1/actions/{card_id}/confirm \
+  -H "Content-Type: application/json" -d '{}'
+
+# 步骤 5: 阶段二 — 生成洞察
+curl -X POST http://localhost:8080/api/v1/sessions/{session_id}/insight \
+  -H "Accept: text/event-stream" --no-buffer
+
+# 预期 SSE:
+#   event:insight (session_state=GENERATING)
+#   event:done (session_state=COMPLETED)
+
+# 步骤 6: 查看完整 session
+curl http://localhost:8080/api/v1/sessions/{session_id}
+# 预期: session_state=COMPLETED, insight 非空
+```
+
+---
+
+## 12. 实施顺序总结
+
+| 阶段 | 步骤 | 文件 | 内容 | 是否影响功能 |
+|:--:|:--:|------|------|:--:|
+| A | 1 | `llm_factory.py` | 加 `get_vision_llm()` / `get_text_llm()` | 否 |
+| A | 2 | `tools/structure.py` | 改用 `get_vision_llm()` | 否 |
+| A | 3 | `subagents/` | 拆分目录结构，改用 `get_text_llm()` | 否 |
+| A | 4 | `deep_agent.py` | Coordinator 改用 `get_text_llm()`，删死代码 | 否* |
+| B | 5 | `database.py` | ALTER TABLE 加 `session_state` | 否 |
+| B | 6 | `schemas/response.py` | SSE 模型加 `session_state` | 否 |
+| B | 7 | `analyze.py` | SSE 事件加 `session_state` | 否 |
+| C | 8 | `analyze.py` | 去掉阶段一的 insight 生成 | **是** |
+| C | 9 | `actions.py` | 持久化用户决策到 confirmed_actions | **是** |
+| C | 10 | `sessions.py` | 新增阶段二 insight 端点 | **是** |
+| D | 11 | 清理 | 删除旧 `subagents.py` 等 | 否 |
+| D | 12 | 全链路测试 | 6 步 curl 测试 | — |
+
+> *A4 从 VISION_MODEL 改为 LLM_MODEL 做 Coordinator，不影响功能但可能改变行为。需测试验证。
