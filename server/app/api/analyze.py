@@ -28,10 +28,26 @@ POST /api/v1/analyze — SSE 流式分析端点。
   5. event:done     — 流结束
      data: {"event":"done","data":{}}
 
+============================== SSE 协议细节 ==============================
+
+  每个事件包含三行：
+    event: <事件类型>   — 客户端据此路由到不同的解析逻辑
+    id: <递增整数>      — sse-starlette 要求 id 为字符串类型
+    data: <JSON>        — 事件负载，格式因事件类型而异
+
+  客户端（iOS AnalysisService.emit()）使用两层策略解析 data 行：
+    1. 用 StreamPayload 通用容器解码，根据 event 字段分发
+    2. 失败时根据 SSE event: header 直接解码对应类型
+
 ============================== 数据持久化 ==============================
 
   SSE 流完成后，本次分析的结构化对话、卡片列表、洞察文本
   会写入 analyze_sessions 表，可通过 GET /api/v1/sessions/{id} 查询。
+
+  持久化发生在流结束后（不阻塞 SSE 推送），原因：
+  - cards 列表在流式过程中逐步收集
+  - insight 文本在流末尾才完整
+  - 流中异常不会影响已推送的事件
 
 ============================== 架构流程 ==============================
 
@@ -41,6 +57,14 @@ POST /api/v1/analyze — SSE 流式分析端点。
   → generate_insight → SSE event:insight
   → SSE event:done
   → 写入 analyze_sessions 表
+
+============================== 错误处理 ==============================
+
+  两层错误捕获：
+  1. 输入验证层（analyze 函数）：image 和 user_context 均为空时，
+     返回一个单事件的 error SSE 流（不进入 Agent 管道）
+  2. Agent 异常层（event_stream 内部）：Agent 管道中任何异常被
+     try/except 捕获，yield 一个 error 事件后流结束
 """
 import json
 import uuid
@@ -57,79 +81,135 @@ from app.storage.database import get_db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Singleton agent — 懒加载，首次请求时才创建（避免 import 时 API key 未配置报错）
+# =============================================================================
+# Agent 单例 — 懒加载，避免 import 时 API key 未配置或网络不通导致启动失败
+# =============================================================================
+
+# 首次调用 analyze 端点时才创建 LiteAilohaAgent 实例
+# 创建过程会初始化 VISION_MODEL + LLM_MODEL 两个 ChatOpenAI 实例
 _agent: LiteAilohaAgent | None = None
 
 
 def _get_agent() -> LiteAilohaAgent:
+    """
+    获取 Agent 单例，首次调用时懒初始化。
+
+    懒加载原因：
+    - Agent 初始化会调用 ChatOpenAI，需要验证 API key 和网络连通性
+    - 如果放在模块级别 import，无网络或 key 失效时服务直接无法启动
+    - 懒加载允许 health endpoint 等其他路由正常工作，仅 analyze 请求时才报错
+
+    线程安全：FastAPI 的 async event loop 是单线程模型，
+    _agent 赋值是原子操作，竞态条件风险极低。
+    """
     global _agent
     if _agent is None:
         _agent = LiteAilohaAgent()
     return _agent
 
 
+# =============================================================================
+# POST /api/v1/analyze — 主分析端点
+# =============================================================================
+
 @router.post("/api/v1/analyze")
 async def analyze(request: AnalyzeRequest):
     """
     分析聊天截图，流式返回结构化对话 + 动作卡片 + 洞察建议。
 
-    入参:
-      - image: 聊天截图的 base64 编码（iOS 端已压缩至 max 1024px）
-      - user_context: 用户可选的补充文字
+    ============================== 处理流程（7 步） ==============================
 
-    出参 (SSE):
-      event:struct → event:card × N → event:insight → event:done
+    [1/7] 提取并清洗请求参数（image base64 + user_context）
+    [2/7] 输入验证：二者至少有一个非空
+    [3/7] 生成 session_id，用于后续质量评估查询
+    [4/7] 进入 event_stream() 异步生成器，开启 SSE 推送
+    [5/7] 逐事件消费 stream_analyze() 返回的 dict，转换为 SSE 格式 yield
+    [6/7] 流完成后，写入 analyze_sessions 表持久化
+    [7/7] 异常捕获：yield error 事件，记录 stack trace
+
+    ============================== 入参 ==============================
+    Args:
+        request.image: 聊天截图的 base64 编码（iOS ImageProcessor 已压缩至 max 1024px）
+        request.user_context: 用户可选的补充文字说明
+
+    ============================== 出参（SSE 事件流） ==============================
+    event:struct → event:card × N → event:insight → event:done
     """
+    # [1/7] 提取请求参数
     image_b64 = (request.image or "").strip()
     user_context = (request.user_context or "").strip()
 
-    # =========================================================================
-    # [1/7] 收到分析请求 — 打印请求摘要
-    # =========================================================================
     logger.info("[1/7] 收到分析请求 | image=%dKB, user_context=%dchars",
                  len(image_b64) // 1024, len(user_context))
 
     # =========================================================================
-    # [2/7] 输入验证: image 和 user_context 至少一个非空
+    # [2/7] 输入验证：image 和 user_context 至少一个非空
+    # 空输入时返回一个单事件 error SSE 流，不进入 Agent 管道
     # =========================================================================
     if not image_b64 and not user_context:
         logger.warning("[2/7] 输入验证失败 | 图片和文本均为空")
+
         async def error_stream():
+            """空输入时的错误 SSE 流：仅包含一个 error 事件。"""
             err = ErrorEvent(
                 code="EMPTY_INPUT",
                 message="请选择一张聊天截图，或输入文字说明",
             )
+            # id 必须为字符串（sse-starlette 要求）
             yield {"event": "error", "id": str(1), "data": err.model_dump_json()}
+
         return EventSourceResponse(error_stream())
+
     logger.info("[2/7] 输入验证通过")
 
     # =========================================================================
-    # [3/7] 生成会话 ID — 用于后续 GET /api/v1/sessions/{id} 查询
+    # [3/7] 生成会话 ID — UUID4，用于 GET /api/v1/sessions/{id} 事后查询
     # =========================================================================
     session_id = str(uuid.uuid4())
     logger.info("[3/7] 生成会话ID | session_id=%s", session_id)
 
+    # =========================================================================
+    # event_stream — 核心 SSE 异步生成器
+    #
+    # 这是一个嵌套的 async generator，原因：
+    # - EventSourceResponse 需要一个 async generator 作为参数
+    # - generator 内部调用 Agent 的 stream_analyze()，消费其 AsyncIterator
+    # - 每收到一个事件，立即通过 yield 推送给 iOS 客户端
+    #
+    # 累积器（structured / cards / insight_text）的作用：
+    # - SSE 是单向推送，无法回溯
+    # - 流完成后需要一次性写入数据库
+    # - 累积器在流式过程中收集完整数据，流结束后统一写入
+    # =========================================================================
+
     async def event_stream():
         event_id = 0
-        # =====================================================================
-        # 累积器 — SSE 流式过程中收集结构化对话和卡片数据
-        # 流完成后一起写入 analyze_sessions 表
-        # =====================================================================
-        structured: dict | None = None
-        cards: list[dict] = []
-        insight_text: str = ""
+
+        # --- 累积器：流式过程中收集数据，流完成后统一写入数据库 ---
+        structured: dict | None = None  # 结构化对话（struct 事件数据）
+        cards: list[dict] = []          # 所有 ActionCard 的 dict 列表
+        insight_text: str = ""          # AI 洞察文本
 
         try:
-            # =================================================================
-            # [4/7] 开始 SSE 流式分析
-            # =================================================================
             logger.info("[4/7] 开始SSE流式分析 | session_id=%s", session_id)
+
+            # =================================================================
+            # [4/7] 消费 Agent 管道的事件流
+            # stream_analyze() 返回 AsyncIterator[dict]，每个 dict 包含:
+            #   {"type": "struct|card|insight|error|done", "data": ...}
+            # =================================================================
             async for event in _get_agent().stream_analyze(image_b64, user_context):
                 event_id += 1
                 event_type = event["type"]
 
+                # =============================================================
+                # [5/7] 事件分发表 — 将 Agent 事件转换为 SSE 格式
+                # 每种事件类型对应不同的 Schema 实例化和 yield 格式
+                # =============================================================
                 match event_type:
-                    # --- 结构化对话 (VISION_MODEL 解析结果) ---
+                    # --- 结构化对话 ---
+                    # VISION_MODEL 通过 structure_conversation tool 返回的结果
+                    # 数据写入 structured 累积器，同时通过 SSE 推送给客户端
                     case "struct":
                         structured = event["data"]
                         struct_event = StructEvent(
@@ -138,14 +218,16 @@ async def analyze(request: AnalyzeRequest):
                         )
                         yield {
                             "event": "struct",
-                            "id": str(event_id),
+                            "id": str(event_id),  # id 必须为字符串
                             "data": struct_event.model_dump_json(),
                         }
                         logger.info("[5/7] SSE事件→struct | participants=%d, messages=%d",
                                      len(structured.get("participants", [])),
                                      len(structured.get("messages", [])))
 
-                    # --- 动作卡片 (子 Agent tool call 结果) ---
+                    # --- 动作卡片 ---
+                    # 子 Agent 的 tool call 结果（create_meeting / create_contact 等）
+                    # 数据添加到 cards 累积器，同时通过 SSE 推送给客户端
                     case "card":
                         card_data = event["data"]
                         card = ActionCard(
@@ -153,6 +235,7 @@ async def analyze(request: AnalyzeRequest):
                             type=card_data["type"],
                             summary=card_data["summary"],
                         )
+                        # ActionCard.model_dump() 序列化为 dict，存入累计器
                         cards.append(card.model_dump())
                         card_event = CardEvent(card=card)
                         yield {
@@ -163,7 +246,8 @@ async def analyze(request: AnalyzeRequest):
                         logger.info("[5/7] SSE事件→card | type=%s, summary=%s",
                                      card_data["type"], card_data["summary"][:50])
 
-                    # --- AI 洞察 (generate_insight tool 结果) ---
+                    # --- AI 洞察 ---
+                    # generate_insight tool 的结果，纯文本
                     case "insight":
                         insight_text = event["data"]
                         insight_event = InsightEvent(insight=insight_text)
@@ -176,6 +260,7 @@ async def analyze(request: AnalyzeRequest):
                                      len(insight_text))
 
                     # --- 错误事件 ---
+                    # Agent 内部错误（LLM 调用失败、tool 执行异常等）
                     case "error":
                         err = ErrorEvent(
                             code=event["data"].get("code", "INTERNAL_ERROR"),
@@ -200,18 +285,22 @@ async def analyze(request: AnalyzeRequest):
                         logger.info("[5/7] SSE事件→done | total_events=%d", event_id)
 
             # =================================================================
-            # [6/7] SSE 流完成后，将本次分析的完整数据写入 analyze_sessions 表
-            # 存储内容:
-            #   - session_id: 唯一标识，可通过 GET /api/v1/sessions/{id} 查询
-            #   - structured_conversation: VISION_MODEL 的结构化对话 JSON
-            #   - cards: 所有 ActionCard 的 JSON 数组
-            #   - insight: AI 洞察文本
-            #   - created_at: 写入时间
+            # [6/7] SSE 流完成 → 持久化到 analyze_sessions 表
+            #
+            # 写入内容:
+            #   session_id            — UUID，后续查询的主键
+            #   structured_conversation — VISION_MODEL 的原始输出 JSON
+            #   cards                 — 所有 ActionCard 的 JSON 数组
+            #   insight               — AI 洞察文本
+            #
+            # 写入时机: 流结束后（不阻塞 SSE 推送）
+            # 失败处理: 日志记录，不影响已推送的 SSE 事件
             # =================================================================
             try:
                 db = await get_db()
                 await db.execute(
-                    "INSERT INTO analyze_sessions (session_id, structured_conversation, cards, insight) "
+                    "INSERT INTO analyze_sessions "
+                    "(session_id, structured_conversation, cards, insight) "
                     "VALUES (?, ?, ?, ?)",
                     (
                         session_id,
@@ -227,6 +316,10 @@ async def analyze(request: AnalyzeRequest):
                 logger.error("[6/7] 持久化失败 | session_id=%s, error=%s", session_id, db_err)
 
         except Exception:
+            # =================================================================
+            # [7/7] 管道异常捕获 — Agent 或 SSE 推送过程中的任何未处理异常
+            # 记录完整 stack trace，向客户端推送最后一个 error 事件
+            # =================================================================
             logger.exception("[7/7] SSE流异常 | session_id=%s", session_id)
             event_id += 1
             err = ErrorEvent(code="INTERNAL_ERROR", message="服务端内部异常，请稍后重试")
@@ -236,4 +329,5 @@ async def analyze(request: AnalyzeRequest):
                 "data": err.model_dump_json(),
             }
 
+    # FastAPI 会自动检测 EventSourceResponse 并设置正确的 Content-Type 头
     return EventSourceResponse(event_stream())
