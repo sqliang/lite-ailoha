@@ -26,7 +26,7 @@ INSIGHT_TOOLS    → Coordinator Agent
 
 ALL_TOOLS        → 平铺列表，供单 Agent 模式备选
 """
-from app.agent.tools.structure import structure_conversation
+from app.agent.tools.structure import structure_conversation, set_shared_image as set_shared_image
 from app.agent.tools.meeting import create_meeting
 from app.agent.tools.contact import create_contact, update_contact, query_contacts
 from app.agent.tools.reminder import create_reminder

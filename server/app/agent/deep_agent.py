@@ -59,12 +59,12 @@ import logging
 from typing import AsyncIterator
 
 from deepagents import create_deep_agent
-from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.agent.prompts import COORDINATOR_PROMPT
 from app.agent.subagents import get_all_subagents
-from app.agent.tools import STRUCTURE_TOOLS, INSIGHT_TOOLS
+from app.agent.tools import STRUCTURE_TOOLS, INSIGHT_TOOLS, set_shared_image
+from app.agent.llm_factory import create_chat_openai
 
 logger = logging.getLogger(__name__)
 
@@ -107,27 +107,36 @@ class LiteAilohaAgent:
             return
 
         # =================================================================
-        # VISION_MODEL — Coordinator 专用，看图理解聊天截图
+        # [1/8] 初始化Agent — 打印配置信息
         # =================================================================
-        self._vision_llm = ChatOpenAI(
+        logger.info("[1/8] 初始化Agent | vision_model=%s@%s, llm_model=%s@%s",
+                     settings.vision_model, settings.vision_base_url,
+                     settings.llm_model, settings.llm_base_url)
+
+        # =================================================================
+        # [2/8] VISION_MODEL — Coordinator 专用，看图理解聊天截图
+        # =================================================================
+        self._vision_llm = create_chat_openai(
             model=settings.vision_model,
             api_key=settings.vision_api_key or settings.llm_api_key or None,
             base_url=settings.vision_base_url or settings.llm_base_url or None,
             temperature=0.3,
         )
+        logger.info("[2/8] VisionLLM创建完成 | model=%s", settings.vision_model)
 
         # =================================================================
-        # LLM_MODEL — 子 Agent 专用，纯文本处理结构化对话 JSON
+        # [3/8] LLM_MODEL — 子 Agent 专用，纯文本处理结构化对话 JSON
         # =================================================================
-        self._text_llm = ChatOpenAI(
+        self._text_llm = create_chat_openai(
             model=settings.llm_model,
             api_key=settings.llm_api_key or settings.vision_api_key or None,
             base_url=settings.llm_base_url or settings.vision_base_url or None,
             temperature=0.3,
         )
+        logger.info("[3/8] TextLLM创建完成 | model=%s", settings.llm_model)
 
         # =================================================================
-        # 组装 Deep Agent
+        # [4/8] 组装 Deep Agent
         # =================================================================
         self._agent = create_deep_agent(
             model=self._vision_llm,
@@ -135,6 +144,8 @@ class LiteAilohaAgent:
             tools=STRUCTURE_TOOLS + INSIGHT_TOOLS,
             subagents=get_all_subagents(),
         )
+        logger.info("[4/8] DeepAgent组装完成 | tools=%d, subagents=%d",
+                     len(STRUCTURE_TOOLS) + len(INSIGHT_TOOLS), 3)
 
     # =========================================================================
     # 流式分析 — SSE 端点的主入口
@@ -166,32 +177,39 @@ class LiteAilohaAgent:
         # 懒初始化: 首次请求时才创建 LLM 和 Agent
         self._ensure_initialized()
 
-        # 构建多模态消息: 文字指令 + 截图
+        # =================================================================
+        # [5/8] 构建多模态消息: 文字指令 + 截图
+        # =================================================================
         prompt = _build_multimodal_prompt(image_base64, user_context)
-        logger.info(
-            "Starting deep agent analysis (image=%d chars, user_context=%d chars)",
-            len(image_base64), len(user_context)
-        )
+        logger.info("[5/8] 构建多模态提示词 | image=%d chars, user_context=%d chars",
+                     len(image_base64), len(user_context))
 
         try:
             # =================================================================
-            # astream_events(version="v2")
-            # 会发出所有 tool call 事件——包括 Coordinator 自己的 tool call
-            # 和子 Agent 内部的 tool call。每个 tool call 完成时触发
-            # on_tool_end 事件，由 _parse_stream_event() 分派为 SSE 事件。
+            # [6/8] 设置共享图片数据 — structure_conversation 从共享变量读图片
+            # 不从 LLM 参数获取 base64（LLM 无法复制 42KB+ base64 数据）
             # =================================================================
+            set_shared_image(image_base64, user_context)
+            logger.info("[6/8] 已设置共享图片，开始astream_events循环")
             async for event in self._agent.astream_events(
                 {"messages": [{"role": "user", "content": prompt}]},
                 version="v2",
+                config={"recursion_limit": 100},
             ):
+                # [7/8] 解析流事件
                 parsed = _parse_stream_event(event)
                 if parsed is not None:
+                    logger.info("[7/8] 流事件解析 | type=%s", parsed.get("type"))
                     yield parsed
 
+            # =================================================================
+            # [8/8] 正常完成
+            # =================================================================
+            logger.info("[8/8] 分析完成")
             yield {"type": "done"}
 
         except Exception:
-            logger.exception("Agent streaming failed")
+            logger.exception("Agent streaming failed for image_len=%d", len(image_base64))
             yield {
                 "type": "error",
                 "data": {
@@ -230,7 +248,7 @@ def _build_multimodal_prompt(image_base64: str, user_context: str) -> list[dict]
             "type": "image_url",
             "image_url": {
                 "url": f"data:image/jpeg;base64,{image_base64}",
-                "detail": "high",
+                # 不传 detail 参数，部分 API（如 Ark）不支持
             },
         },
     ]
@@ -266,15 +284,30 @@ def _parse_stream_event(event: dict) -> dict | None:
 
         # structure_conversation → struct 事件
         if tool_name == "structure_conversation":
-            return _tool_output_to_struct_event(tool_output)
+            result = _tool_output_to_struct_event(tool_output)
+            if result:
+                logger.info("  ↳ struct解析 | participants=%s",
+                             result.get("data", {}).get("participants", []))
+            return result
 
         # 四个 domain tool → card 事件
         if tool_name in _CARD_TOOL_NAMES:
-            return _tool_output_to_card_event(tool_name, tool_output)
+            result = _tool_output_to_card_event(tool_name, tool_output)
+            if result:
+                logger.info("  ↳ card解析 | type=%s, id=%s",
+                             result.get("data", {}).get("type"),
+                             result.get("data", {}).get("id"))
+            return result
 
         # generate_insight → insight 事件
         if tool_name == "generate_insight":
-            return _tool_output_to_insight_event(tool_output)
+            result = _tool_output_to_insight_event(tool_output)
+            if result:
+                # 安全获取长度（ToolMessage 无 len）
+                out_text = tool_output.content if hasattr(tool_output, 'content') else tool_output
+                out_len = len(str(out_text)) if out_text else 0
+                logger.info("  ↳ insight解析 | output_len=%d chars", out_len)
+            return result
 
     # -- Chain 结束（fallback: 如果 generate_insight 没有被显式调用）--
     if event_type == "on_chain_end" and event.get("name") == "LangGraph":
@@ -293,12 +326,12 @@ def _parse_stream_event(event: dict) -> dict | None:
 # Tool 输出 → SSE 事件 转换函数
 # =============================================================================
 
-def _tool_output_to_struct_event(output: str) -> dict | None:
+def _tool_output_to_struct_event(output) -> dict | None:
     """
     将 structure_conversation tool 的输出转换为 struct 事件。
 
     ============================== 输入 ==============================
-    output: VISION_MODEL 返回的 JSON 字符串
+    output: VISION_MODEL 返回的 JSON 字符串或 ToolMessage 对象
             格式: {"participants": [...], "messages": [{time, speaker, content}]}
 
     ============================== 输出 ==============================
@@ -308,8 +341,15 @@ def _tool_output_to_struct_event(output: str) -> dict | None:
       2. 写入 analyze_sessions.structured_conversation 字段
     """
     import json as _json
+
+    # LangGraph v2 可能返回 ToolMessage 对象，提取 content
+    if hasattr(output, 'content'):
+        output = output.content
+    if not isinstance(output, str):
+        output = str(output)
+
     try:
-        result = _json.loads(output) if isinstance(output, str) else output
+        result = _json.loads(output)
     except (_json.JSONDecodeError, TypeError):
         # JSON 解析失败: VISION_MODEL 可能返回了非 JSON 文本
         # 返回原始文本作为 fallback
@@ -324,13 +364,13 @@ def _tool_output_to_struct_event(output: str) -> dict | None:
     }
 
 
-def _tool_output_to_card_event(tool_name: str, output: str) -> dict | None:
+def _tool_output_to_card_event(tool_name: str, output) -> dict | None:
     """
     将子 Agent 的 domain tool 输出转换为 card 事件。
 
     ============================== 输入 ==============================
     tool_name: create_meeting / create_contact / update_contact / create_reminder
-    output: tool 返回的 JSON 字符串，包含 action 详情
+    output: tool 返回的 JSON 字符串或 ToolMessage，包含 action 详情
 
     ============================== 输出 ==============================
     {"type": "card", "data": {"id": "uuid", "type": "create_meeting", "summary": "..."}}
@@ -339,8 +379,13 @@ def _tool_output_to_card_event(tool_name: str, output: str) -> dict | None:
       2. 写入 analyze_sessions.cards JSON 数组
     """
     import json as _json
+    # LangGraph v2 可能返回 ToolMessage 对象，提取 content
+    if hasattr(output, 'content'):
+        output = output.content
+    if not isinstance(output, str):
+        output = str(output)
     try:
-        result = _json.loads(output) if isinstance(output, str) else output
+        result = _json.loads(output)
     except (_json.JSONDecodeError, TypeError):
         return None
 
@@ -360,12 +405,12 @@ def _tool_output_to_card_event(tool_name: str, output: str) -> dict | None:
     }
 
 
-def _tool_output_to_insight_event(output: str) -> dict | None:
+def _tool_output_to_insight_event(output) -> dict | None:
     """
     将 generate_insight tool 的输出转换为 insight 事件。
 
     ============================== 输入 ==============================
-    output: generate_insight tool 返回的 JSON 字符串或纯文本
+    output: generate_insight tool 返回的 JSON 字符串、ToolMessage 或纯文本
 
     ============================== 输出 ==============================
     {"type": "insight", "data": "AI 洞察文本"}
@@ -374,8 +419,13 @@ def _tool_output_to_insight_event(output: str) -> dict | None:
       2. 写入 analyze_sessions.insight 字段
     """
     import json as _json
+    # LangGraph v2 可能返回 ToolMessage 对象，提取 content
+    if hasattr(output, 'content'):
+        output = output.content
+    if not isinstance(output, str):
+        output = str(output)
     try:
-        result = _json.loads(output) if isinstance(output, str) else output
+        result = _json.loads(output)
     except (_json.JSONDecodeError, TypeError):
         return {"type": "insight", "data": str(output)} if output else None
 

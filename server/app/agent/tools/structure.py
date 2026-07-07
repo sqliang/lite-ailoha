@@ -40,10 +40,12 @@ structure_conversation 工具 —— 用 VISION_MODEL 解析聊天截图。
   - 可评估: 存储在 sessions 表中，事后可对照原始截图评估 VISION_MODEL 的准确率
   - 可解耦: 结构化和后续的动作识别是两个独立步骤，各自由不同的模型处理
 """
+import logging
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from app.config import settings
+from app.agent.llm_factory import create_chat_openai
 
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # VISION_MODEL — 看图理解聊天截图，必须支持多模态（vision）
@@ -54,16 +56,35 @@ _vision_llm = None
 
 
 def _get_vision_llm():
-    """懒加载 VISION_MODEL 实例。"""
+    """懒加载 VISION_MODEL 实例。使用 llm_factory 禁用代理。"""
     global _vision_llm
     if _vision_llm is None:
-        _vision_llm = ChatOpenAI(
+        logger.info("[structure.py] 创建VisionLLM | model=%s, base_url=%s",
+                     settings.vision_model, settings.vision_base_url)
+        _vision_llm = create_chat_openai(
             model=settings.vision_model,
             api_key=settings.vision_api_key or settings.llm_api_key or None,
             base_url=settings.vision_base_url or settings.llm_base_url or None,
             temperature=0.3,
         )
+        logger.info("[structure.py] VisionLLM创建完成")
     return _vision_llm
+
+
+# =============================================================================
+# 共享状态 — structure_conversation 不从 LLM 参数获取 base64
+# （LLM 无法准确复制大量 base64 数据，会截断导致 1×1 像素错误）
+# =============================================================================
+
+_shared_image_b64: str = ""
+_shared_user_context: str = ""
+
+
+def set_shared_image(image_base64: str, user_context: str = ""):
+    """在 Agent 运行前设置当前请求的图片数据。"""
+    global _shared_image_b64, _shared_user_context
+    _shared_image_b64 = image_base64
+    _shared_user_context = user_context
 
 
 # =============================================================================
@@ -71,7 +92,7 @@ def _get_vision_llm():
 # =============================================================================
 
 @tool
-def structure_conversation(screenshot_base64: str, user_context: str = "") -> str:
+def structure_conversation(user_context: str = "") -> str:
     """用多模态模型解析微信聊天截图，输出结构化对话 JSON。
 
     ============================== 调用时机 ==============================
@@ -80,8 +101,6 @@ def structure_conversation(screenshot_base64: str, user_context: str = "") -> st
 
     ============================== 输入参数 ==============================
     Args:
-        screenshot_base64: 聊天截图的 base64 编码（JPEG/PNG）
-                           iOS 端已压缩至 max 1024px
         user_context: 用户的可选补充说明，如"这是我和张三的聊天记录"
 
     ============================== 返回值 ==============================
@@ -103,7 +122,17 @@ def structure_conversation(screenshot_base64: str, user_context: str = "") -> st
     - 语音消息标注为 "[语音消息]" 或 "[语音消息: 已取消]"
     - 截图引用标注为 "[截图: 简要描述]"
     - 消息内容保留原始文字，不做摘要或改写
+
+    ============================== 图片来源 ==============================
+    图片数据不从 LLM 参数获取（LLM 无法复制 base64），
+    而是从 set_shared_image() 预先设置的共享变量中读取。
     """
+    # 从共享变量读取图片（不是从 LLM 参数）
+    screenshot_base64 = _shared_image_b64
+    ctx = _shared_user_context
+    if user_context and user_context != ctx:
+        ctx = f"{ctx}; {user_context}"
+
     # 构建多模态消息: 文字提示 + 图片
     messages = [
         {
@@ -112,14 +141,14 @@ def structure_conversation(screenshot_base64: str, user_context: str = "") -> st
                 {
                     "type": "text",
                     "text": _STRUCTURER_PROMPT + (
-                        f"\n\n用户补充说明: {user_context}" if user_context else ""
+                        f"\n\n用户补充说明: {ctx}" if ctx else ""
                     ),
                 },
                 {
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/jpeg;base64,{screenshot_base64}",
-                        "detail": "high",  # 高细节模式，确保聊天文字清晰可读
+                        # 不传 detail 参数，部分 API（如 Ark）不支持
                     },
                 },
             ],
@@ -127,6 +156,7 @@ def structure_conversation(screenshot_base64: str, user_context: str = "") -> st
     ]
 
     response = _get_vision_llm().invoke(messages)
+    logger.info("[structure.py] VisionLLM invoke完成 | output_len=%d chars", len(response.content) if response.content else 0)
     return response.content
 
 
