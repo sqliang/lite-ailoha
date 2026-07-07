@@ -50,6 +50,7 @@ class StructEvent(BaseModel):
     - messages: 消息列表，每条包含 time/speaker/content
     """
     event: str = "struct"
+    session_state: str = Field(default="STRUCTURED", description="会话状态")
     participants: list[str] = Field(default_factory=list, description="对话参与者姓名列表")
     messages: list[dict] = Field(default_factory=list, description="消息列表 [{time, speaker, content}]")
 
@@ -62,6 +63,7 @@ class CardEvent(BaseModel):
     - card: ActionCard 对象（id + type + summary）
     """
     event: str = "card"
+    session_state: str = Field(default="EXTRACTING", description="会话状态")
     card: ActionCard
 
 
@@ -73,6 +75,7 @@ class InsightEvent(BaseModel):
     - insight: 中文洞察文本
     """
     event: str = "insight"
+    session_state: str = Field(default="GENERATING", description="会话状态")
     insight: str
 
 
@@ -85,6 +88,7 @@ class ErrorEvent(BaseModel):
     - message: 人类可读的中文错误描述
     """
     event: str = "error"
+    session_state: str = Field(default="", description="错误发生时的会话状态（可能为空）")
     code: str = Field(description="错误码: EMPTY_INPUT | AGENT_ERROR | INTERNAL_ERROR")
     message: str = Field(description="中文错误描述")
 
@@ -97,6 +101,7 @@ class DoneEvent(BaseModel):
     - data: 空字典（预留扩展）
     """
     event: str = "done"
+    session_state: str = Field(default="READY", description="会话状态: READY（阶段一完成）或 COMPLETED（阶段二完成）")
     data: dict = Field(default_factory=dict)
 
 # -- REST 响应 ---------------------------------------------------------------
@@ -126,12 +131,14 @@ class SessionResponse(BaseModel):
 
     字段说明:
     - session_id: 分析会话唯一标识
+    - session_state: 会话当前状态（PENDING → ... → COMPLETED）
     - structured_conversation: VISION_MODEL 解析的结构化对话（JSON）
     - cards: Agent 识别出的所有动作卡片列表
     - insight: AI 生成的洞察建议
     - created_at: 会话创建时间（ISO 8601）
     """
     session_id: str
+    session_state: str = "READY"
     structured_conversation: Optional[dict] = None
     cards: list[dict] = Field(default_factory=list)
     insight: Optional[str] = None
