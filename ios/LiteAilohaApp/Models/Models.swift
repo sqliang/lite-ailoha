@@ -49,12 +49,19 @@ import Foundation
 /// }
 /// ```
 struct StructPayload: Codable, Sendable {
-    /// SSE 事件类型（固定为 "struct"）
+    /// SSE 事件类型
     let event: String
-    /// 对话参与人的名称列表（如 ["张三", "李四"]）
+    /// 会话状态（PENDING → STRUCTURED → ... → COMPLETED）
+    var sessionState: String? = nil
+    /// 对话参与人的名称列表
     let participants: [String]
     /// 消息列表（按时间升序排列）
     let messages: [StructMessage]
+
+    enum CodingKeys: String, CodingKey {
+        case event, participants, messages
+        case sessionState = "session_state"
+    }
 }
 
 /// 结构化对话中的单条消息。
