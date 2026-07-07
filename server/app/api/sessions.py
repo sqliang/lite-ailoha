@@ -75,10 +75,17 @@ async def generate_insight(session_id: str):
             else:
                 cancelled.append(dict(cr))
 
-    # 构建 insight 消息
-    from app.agent import LiteAilohaAgent
-    agent = LiteAilohaAgent()
-    agent._ensure_initialized()
+    # 构建阶段二 Agent（tools 只有 generate_insight）
+    from deepagents import create_deep_agent
+    from app.agent.llm_factory import get_text_llm
+    from app.agent.tools import INSIGHT_TOOLS
+
+    insight_agent = create_deep_agent(
+        model=get_text_llm(),
+        system_prompt="你是一个智能助理。当用户要求生成洞察时，调用 generate_insight 工具。",
+        tools=INSIGHT_TOOLS,
+        subagents=[],
+    )
 
     message = _build_insight_message(
         structured=row["structured_conversation"],
@@ -89,14 +96,13 @@ async def generate_insight(session_id: str):
     async def event_stream():
         event_id = 0
         try:
-            # 更新状态
             await db.execute(
                 "UPDATE analyze_sessions SET session_state='GENERATING' WHERE session_id=?",
                 (session_id,),
             )
             await db.commit()
 
-            async for event in agent._agent.astream_events(
+            async for event in insight_agent.astream_events(
                 {"messages": [{"role": "user", "content": message}]},
                 version="v2",
             ):

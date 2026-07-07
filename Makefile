@@ -16,6 +16,9 @@ dev:
 test:
 	cd server && ../.venv/bin/pytest -v
 
+test-e2e:
+	cd server && ../.venv/bin/python tests/e2e/test_e2e.py
+
 lint:
 	cd server && ../.venv/bin/ruff check app/
 

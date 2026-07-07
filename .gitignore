@@ -35,6 +35,8 @@ test*.png
 test*.jpg
 test*_sse_raw.txt
 test*_structured.txt
+server/tests/e2e/output/*.txt
+!server/tests/e2e/output/.gitkeep
 
 # === Xcode ===
 xcuserdata/
