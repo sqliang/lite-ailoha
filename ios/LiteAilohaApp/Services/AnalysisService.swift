@@ -134,16 +134,24 @@ final class AnalysisService: @unchecked Sendable {
                     print("[AnalysisService] === SSE 流开始 ===")
                     for try await line in bytes.lines {
                         let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        if line.hasPrefix("event:") {
-                            curEvent = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                        // 打印所有行，包括 ping
+                        if trimmed.hasPrefix(":") {
+                            print("[AnalysisService] ◀︎ ping")
+                        } else if trimmed.hasPrefix("event:") {
+                            curEvent = trimmed.dropFirst(6).trimmingCharacters(in: .whitespaces)
                             print("[AnalysisService] ◀︎ event: \(curEvent ?? "(nil)")")
-                            continue
+                        } else if trimmed.hasPrefix("data:") {
+                            let jsonStr = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                            print("[AnalysisService] ◀︎ data: \(jsonStr.prefix(300))")
+                            // 显式打印 session_state
+                            if let d = jsonStr.data(using: .utf8),
+                               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                               let ss = obj["session_state"] as? String {
+                                print("[AnalysisService]    ↳ session_state = \(ss)")
+                            }
+                            self.emit(event: curEvent, data: jsonStr, to: continuation)
+                            curEvent = nil
                         }
-                        guard line.hasPrefix("data:") else { continue }
-                        let jsonStr = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        print("[AnalysisService] ◀︎ data: \(jsonStr.prefix(500))")
-                        self.emit(event: curEvent, data: jsonStr, to: continuation)
-                        curEvent = nil
                     }
                     print("[AnalysisService] === SSE 流结束 ===")
                     continuation.finish()
@@ -177,6 +185,10 @@ final class AnalysisService: @unchecked Sendable {
     private nonisolated func emit(event: String?, data json: String, to c: AsyncThrowingStream<StreamEvent, Error>.Continuation) {
         // === 第一层：通用容器解码（主要路径） ===
         if let d = json.data(using: .utf8), let p = try? JSONDecoder().decode(StreamPayload.self, from: d) {
+            // 每个事件都可能携带 session_state
+            if let state = p.sessionState {
+                c.yield(.state(state))
+            }
             switch p.event {
             case "struct":
                 if let pp = p.participants, let mm = p.messages {

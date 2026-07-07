@@ -65,6 +65,8 @@ final class AnalysisViewModel: ObservableObject {
     /// 由 SSE 事件的 session_state 字段更新，驱动 StatusSection 展示。
     @Published var sessionState: String?
 
+    // currentStep / statusMessage 已删除 — 步骤进度统一由 sessionState 驱动。
+
     /// Toast 浮动提示消息文本。
     /// 非 nil 时显示 Toast，nil 时隐藏。
     @Published var toastMessage: String?
@@ -81,6 +83,9 @@ final class AnalysisViewModel: ObservableObject {
 
     /// Core Data 托管上下文（用于持久化已确认的卡片）
     private let context = PersistenceController.shared.container.viewContext
+
+    /// 当前分析任务（用于取消）
+    private var currentTask: Task<Void, Never>?
 
     // MARK: - 分析方法
 
@@ -102,23 +107,33 @@ final class AnalysisViewModel: ObservableObject {
     ///
     /// - 异常处理：流中任何网络错误会触发 catch 分支，显示失败 Toast
     func startAnalysis(imageData: Data?, userContext: String = "") {
+        // 取消旧任务
+        currentTask?.cancel()
         // 重置所有分析状态，确保新分析不受旧数据影响
-        cards = []; insight = ""; structure = nil; isAnalyzing = true
-        Task {
+        cards = []; insight = ""; structure = nil; sessionState = nil; isAnalyzing = true
+        currentTask = Task {
             do {
                 // 逐事件消费 SSE 流，每个事件驱动一次 UI 更新
                 for try await event in service.analyze(imageData: imageData, userContext: userContext) {
                     switch event {
-                    case .structure(let sp): structure = sp; sessionState = sp.sessionState
+                    case .structure(let sp): structure = sp; if let s = sp.sessionState { sessionState = s }
                     case .card(let card): cards.append(card)
                     case .insight(let text): insight = text
                     case .error(let p): showToast(p.message, success: false)
-                    case .done: break   // 流正常结束，isAnalyzing 在循环外置 false
+                    case .done: break
+                    case .state(let s): sessionState = s   // 流正常结束，isAnalyzing 在循环外置 false
                     }
                 }
                 isAnalyzing = false
             } catch { isAnalyzing = false; showToast("分析失败：\(error.localizedDescription)", success: false) }
         }
+    }
+
+    /// 中断当前分析。
+    func cancelAnalysis() {
+        currentTask?.cancel()
+        isAnalyzing = false
+        sessionState = "CANCELLED"
     }
 
     // MARK: - 卡片操作

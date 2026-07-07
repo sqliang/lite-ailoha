@@ -1,69 +1,256 @@
 import SwiftUI
 
-/// Agent 工作状态区域。
-///
-/// 根据 session_state 展示不同的状态 UI。
+/// Agent 工作步骤列表 — 实时展示处理进度。
 struct StatusSection: View {
 
     let state: String?
+    let structure: StructPayload?
+    let cardCount: Int
+    let isAnalyzing: Bool
+
+    /// 循环切换文案的索引
+    @State private var messageIndex = 0
+
+    /// 文案池
+    private let messagePool: [String: [String]] = [
+        "structuring": [
+            "正在理解聊天内容…",
+            "正在分析对话结构…",
+            "正在识别参与者…",
+            "正在解析消息时间线…",
+        ],
+        "extracting": [
+            "正在识别待办事项…",
+            "正在分析会议安排…",
+            "正在提取联系人信息…",
+            "正在匹配提醒规则…",
+        ],
+        "insight": [
+            "正在生成洞察建议…",
+            "正在分析上下文关联…",
+            "正在整理关键发现…",
+        ],
+    ]
+
+    /// 当前展示的文案（由 sessionState 决定文案池）
+    private var displayMessage: String {
+        let step = stepFromState
+        guard let pool = messagePool[step] else {
+            return "Agent 正在分析…"
+        }
+        if messageIndex == 0 {
+            return pool[0]
+        }
+        return pool[messageIndex % pool.count]
+    }
+
+    /// sessionState → 文案池步骤标识
+    private var stepFromState: String {
+        switch state {
+        case "PENDING", "STRUCTURING": return "structuring"
+        case "STRUCTURED", "EXTRACTING", "EXTRACTED", "PARTIAL", "NO_CARDS": return "extracting"
+        case "GENERATING", "COMPLETED": return "insight"
+        default: return "structuring"
+        }
+    }
+
+    // MARK: - Body
 
     var body: some View {
-        if state != nil {
-            HStack(spacing: 8) {
-                statusIcon
-                Text(statusText)
-                    .font(.subheadline)
-                if isProcessing {
-                    ProgressView()
-                        .scaleEffect(0.8)
+        // 分析中但没有具体状态 → 显示基础进度
+        if state == nil && !isAnalyzing { EmptyView() }
+
+        VStack(alignment: .leading, spacing: 0) {
+            // 当前进度文案（循环切换，分析中始终展示）
+            if isAnalyzing || (state != nil && state != "READY" && state != "COMPLETED") {
+                HStack(spacing: 10) {
+                    ProgressView().scaleEffect(0.8)
+                    Text(displayMessage)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .contentTransition(.opacity)
+                        .animation(.easeInOut(duration: 0.3), value: displayMessage)
+                    Spacer()
                 }
-                Spacer()
+                .padding(.vertical, 10)
+                .padding(.horizontal, 4)
             }
-            .padding()
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+
+            if state == "CANCELLED" {
+                HStack {
+                    Image(systemName: "stop.circle.fill")
+                        .foregroundColor(.orange)
+                    Text("已停止分析")
+                        .font(.subheadline)
+                    Spacer()
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 4)
+            }
+
+            stepRow(
+                icon: "text.bubble.fill",
+                label: "理解聊天内容",
+                status: stepStatus(for: .structure),
+                detail: structure.map { "\($0.participants.count)人, \($0.messages.count)条消息" }
+            )
+
+            Divider().padding(.leading, 36)
+
+            stepRow(
+                icon: "list.bullet.rectangle",
+                label: "识别待办事项",
+                status: stepStatus(for: .extract),
+                detail: cardCount > 0 ? "已识别 \(cardCount) 个" : nil
+            )
+
+            Divider().padding(.leading, 36)
+
+            stepRow(
+                icon: "lightbulb.fill",
+                label: "生成洞察建议",
+                status: stepStatus(for: .insight),
+                detail: nil
+            )
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .onChange(of: state) { _, _ in
+            messageIndex = 0  // 状态变化时重置
+        }
+        .task(id: state) {
+            // 每 3 秒循环切换文案
+            let step = stepFromState
+            guard let pool = messagePool[step], pool.count > 1 else { return }
+            var i = 1
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                if Task.isCancelled { return }
+                withAnimation { messageIndex = i }
+                i = (i + 1) % pool.count
+                if i == 0 { i = 1 }
+            }
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - 步骤状态判定
 
-    private var isProcessing: Bool {
-        guard let state else { return false }
-        return ["PENDING", "STRUCTURING", "EXTRACTING", "GENERATING"].contains(state)
-    }
+    private enum Step { case structure, extract, insight }
 
-    private var statusIcon: some View {
-        guard let state else { return AnyView(EmptyView()) }
+    private func stepStatus(for step: Step) -> StepStatus {
+        guard let state else {
+            // state 未到达时的保守推断：running 乐观（在干），done 等 state 确认
+            let structDone = structure != nil
+            switch step {
+            case .structure: return structDone ? .done : (isAnalyzing ? .running : .pending)
+            case .extract:   return structDone ? .running : .pending
+            case .insight:   return .pending
+            }
+        }
+
         switch state {
-        case "STRUCTURE_FAILED", "INSIGHT_FAILED":
-            return AnyView(Image(systemName: "xmark.circle.fill").foregroundStyle(.red))
-        case "COMPLETED":
-            return AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(.green))
-        case "STRUCTURED", "EXTRACTED":
-            return AnyView(Image(systemName: "checkmark.circle.fill").foregroundStyle(.green))
-        case "PARTIAL", "NO_CARDS":
-            return AnyView(Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange))
-        default:
-            return AnyView(Image(systemName: "hourglass").foregroundStyle(.blue))
+        case "CANCELLED":
+            return .failed
+        default: break
+        }
+
+        switch step {
+        case .structure:
+            switch state {
+            case "PENDING", "STRUCTURING": return .running
+            case "STRUCTURED", "EXTRACTING", "EXTRACTED", "PARTIAL", "NO_CARDS",
+                 "READY", "GENERATING", "COMPLETED": return .done
+            case "STRUCTURE_FAILED": return .failed
+            default: return .pending
+            }
+        case .extract:
+            switch state {
+            case "PENDING", "STRUCTURING": return .pending
+            case "STRUCTURED", "EXTRACTING": return .running
+            case "EXTRACTED", "PARTIAL", "NO_CARDS",
+                 "READY", "GENERATING", "COMPLETED": return .done
+            default: return .pending
+            }
+        case .insight:
+            switch state {
+            case "GENERATING": return .running
+            case "COMPLETED": return .done
+            case "INSIGHT_FAILED": return .failed
+            default: return .pending
+            }
         }
     }
 
-    private var statusText: String {
-        guard let state else { return "" }
-        switch state {
-        case "PENDING": return "准备中..."
-        case "STRUCTURING": return "正在理解聊天内容..."
-        case "STRUCTURED": return "聊天内容已理解"
-        case "EXTRACTING": return "正在识别待办事项..."
-        case "EXTRACTED": return "待办事项已识别"
-        case "PARTIAL": return "部分内容已识别"
-        case "NO_CARDS": return "聊天中未发现待办事项"
-        case "READY": return "请查看并确认卡片"
-        case "GENERATING": return "正在生成建议..."
-        case "COMPLETED": return "分析完成"
-        case "STRUCTURE_FAILED": return "分析失败，请重试"
-        case "INSIGHT_FAILED": return "洞察生成失败"
-        default: return state
+    private enum StepStatus {
+        case pending, running, done, failed
+    }
+
+    @ViewBuilder
+    private func stepRow(icon: String, label: String, status: StepStatus, detail: String?) -> some View {
+        HStack(spacing: 12) {
+            // 图标 + 状态
+            ZStack {
+                Image(systemName: icon)
+                    .font(.callout)
+                    .foregroundStyle(iconColor(status))
+                    .opacity(status == .pending ? 0.5 : 1)
+
+                if status == .running {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                }
+            }
+            .frame(width: 24, height: 24)
+
+            // 文字
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(label)
+                        .font(.subheadline)
+                        .foregroundStyle(status == .pending ? .secondary : .primary)
+                    statusBadge(status)
+                }
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func iconColor(_ status: StepStatus) -> Color {
+        switch status {
+        case .pending: return .secondary
+        case .running: return .accentColor
+        case .done: return .green
+        case .failed: return .red
+        }
+    }
+
+    @ViewBuilder
+    private func statusBadge(_ status: StepStatus) -> some View {
+        switch status {
+        case .pending:
+            Image(systemName: "circle")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        case .running:
+            Text("进行中")
+                .font(.caption2)
+                .foregroundStyle(.blue)
+        case .done:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption2)
+                .foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "xmark.circle.fill")
+                .font(.caption2)
+                .foregroundStyle(.red)
         }
     }
 }

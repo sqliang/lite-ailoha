@@ -81,6 +81,9 @@ from app.storage.database import get_db
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 取消标记 — 被 cancel 端点写入，SSE generator 读取
+_cancelled_sessions: set[str] = set()
+
 # =============================================================================
 # Agent 单例 — 懒加载，避免 import 时 API key 未配置或网络不通导致启动失败
 # =============================================================================
@@ -198,12 +201,27 @@ async def analyze(request: AnalyzeRequest):
         try:
             logger.info("[4/7] 开始SSE流式分析 | session_id=%s", session_id)
 
+            # 显式推送第一步 status（不依赖 LangGraph 事件）
+            yield {"event": "status", "id": str(1),
+                   "data": json.dumps({"step": "structuring", "message": "正在理解聊天内容…"}, ensure_ascii=False)}
+
             # =================================================================
             # [4/7] 消费 Agent 管道的事件流
             # stream_analyze() 返回 AsyncIterator[dict]，每个 dict 包含:
             #   {"type": "struct|card|insight|error|done", "data": ...}
             # =================================================================
             async for event in _get_agent().stream_analyze(image_b64, user_context):
+                # 检查是否被取消
+                if session_id in _cancelled_sessions:
+                    _cancelled_sessions.discard(session_id)
+                    yield {"event": "cancelled", "id": str(event_id + 1), "data": json.dumps({"session_state": "CANCELLED"})}
+                    await db.execute(
+                        "UPDATE analyze_sessions SET session_state='CANCELLED' WHERE session_id=?",
+                        (session_id,),
+                    )
+                    await db.commit()
+                    logger.info("Session %s cancelled by user", session_id)
+                    return
                 event_id += 1
                 event_type = event["type"]
 
@@ -228,10 +246,11 @@ async def analyze(request: AnalyzeRequest):
                         logger.info("[5/7] SSE事件→struct | participants=%d, messages=%d",
                                      len(structured.get("participants", [])),
                                      len(structured.get("messages", [])))
+                        # 结构化完成，推送提取阶段 status
+                        yield {"event": "status", "id": str(event_id),
+                               "data": json.dumps({"step": "extracting", "message": "正在识别待办事项…"}, ensure_ascii=False)}
 
                     # --- 动作卡片 ---
-                    # 子 Agent 的 tool call 结果（create_meeting / create_contact 等）
-                    # 数据添加到 cards 累积器，同时通过 SSE 推送给客户端
                     case "card":
                         card_data = event["data"]
                         card = ActionCard(
@@ -290,15 +309,15 @@ async def analyze(request: AnalyzeRequest):
             # [6/7] SSE 流完成 → 统一 UPDATE 所有累积数据到 analyze_sessions
             # =================================================================
             try:
-                db = await get_db()
+                _write_db = await get_db()
                 state = "EXTRACTED" if cards else "NO_CARDS"
-                await db.execute(
+                await _write_db.execute(
                     "UPDATE analyze_sessions SET structured_conversation=?, cards=?, session_state=? WHERE session_id=?",
                     (json.dumps(structured, ensure_ascii=False) if structured else None,
                      json.dumps(cards, ensure_ascii=False) if cards else "[]",
                      state, session_id),
                 )
-                await db.commit()
+                await _write_db.commit()
                 logger.info("[6/7] 持久化完成 | session_id=%s, cards=%d, state=%s",
                              session_id, len(cards), state)
             except Exception as db_err:

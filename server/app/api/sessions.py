@@ -1,6 +1,7 @@
 """
 GET /api/v1/sessions/{id} — 查询分析会话
 POST /api/v1/sessions/{id}/insight — 阶段二: 生成洞察
+POST /api/v1/sessions/{id}/cancel — 中断分析
 """
 import json
 import logging
@@ -11,9 +12,18 @@ from app.storage.database import get_db
 from app.schemas.response import SessionResponse, InsightEvent, ErrorEvent, DoneEvent
 from app.agent.llm_factory import get_text_llm
 from app.agent.tools import INSIGHT_TOOLS
+from app.api.analyze import _cancelled_sessions
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.post("/api/v1/sessions/{session_id}/cancel")
+async def cancel_session(session_id: str):
+    """中断正在进行的分析。"""
+    _cancelled_sessions.add(session_id)
+    logger.info("Session %s marked for cancellation", session_id)
+    return {"session_id": session_id, "status": "cancelled"}
 
 # 阶段二 insight agent 单例（懒初始化，避免每次请求重新创建）
 _insight_agent = None

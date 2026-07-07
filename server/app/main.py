@@ -50,7 +50,7 @@ if os.path.exists(_env_path):
                 if key not in os.environ:
                     os.environ[key] = value
     logger.info("Loaded .env from %s (%d vars)", _env_path,
-                 sum(1 for l in open(_env_path) if l.strip() and not l.strip().startswith("#") and "=" in l))
+                 sum(1 for line in open(_env_path) if line.strip() and not line.strip().startswith("#") and "=" in line))
 
 # LangSmith 追踪：LangChain 直接从 os.environ 读取 LANGCHAIN_* 变量，
 # 这里兼容 LANGSMITH_* 和 LANGCHAIN_* 两种前缀
