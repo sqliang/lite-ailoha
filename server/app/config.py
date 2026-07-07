@@ -51,14 +51,14 @@ class Settings(BaseSettings):
     """应用配置，从 .env 文件和系统环境变量加载。"""
 
     # --- Vision Model — Coordinator Agent 使用，需要多模态 ---
-    vision_model: str = "gpt-4o"
+    vision_model: str = "doubao-seed-evolving"
     vision_api_key: str = ""
-    vision_base_url: str = "https://api.openai.com/v1"
+    vision_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
 
     # --- LLM Model — 子 Agent 使用，纯文本推理 ---
-    llm_model: str = "gpt-4o"
+    llm_model: str = "deepseek-v4-pro"
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.openai.com/v1"
+    llm_base_url: str = "https://api.deepseek.com"
 
     # --- Database（SQLite 零配置）---
     database_url: str = "sqlite+aiosqlite:///./lite_ailoha.db"
