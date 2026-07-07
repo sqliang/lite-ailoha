@@ -18,6 +18,7 @@ Endpoints:
 """
 from contextlib import asynccontextmanager
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,12 +29,51 @@ from app.api.health import router as health_router
 from app.api.sessions import router as sessions_router
 from app.storage.database import get_db, close_db
 
-# 配置日志：INFO 级别 + 清晰的时间格式，方便联调时实时观察处理进度
+# 配置日志：INFO 级别 + 清晰的时间格式
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+logger = logging.getLogger(__name__)
+
+# 手动加载 .env 到 os.environ（pydantic-settings 不会自动注入）
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+_env_path = os.path.abspath(_env_path)
+if os.path.exists(_env_path):
+    with open(_env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip("\"'")
+                if key not in os.environ:
+                    os.environ[key] = value
+    logger.info("Loaded .env from %s (%d vars)", _env_path,
+                 sum(1 for l in open(_env_path) if l.strip() and not l.strip().startswith("#") and "=" in l))
+
+# LangSmith 追踪：LangChain 直接从 os.environ 读取 LANGCHAIN_* 变量，
+# 这里兼容 LANGSMITH_* 和 LANGCHAIN_* 两种前缀
+_tracing_on = (
+    os.environ.get("LANGCHAIN_TRACING_V2", "").lower() == "true"
+    or os.environ.get("LANGSMITH_TRACING", "").lower() == "true"
+)
+if _tracing_on:
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    for _src, _dst in [
+        ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"),
+        ("LANGSMITH_PROJECT", "LANGCHAIN_PROJECT"),
+        ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"),
+    ]:
+        if os.environ.get(_src) and not os.environ.get(_dst):
+            os.environ[_dst] = os.environ[_src]
+    logger.info(
+        "LangSmith tracing ENABLED | project=%s | endpoint=%s",
+        os.environ.get("LANGCHAIN_PROJECT", "?"),
+        os.environ.get("LANGCHAIN_ENDPOINT", "?"),
+    )
+else:
+    logger.info("LangSmith tracing DISABLED")
 
 
 @asynccontextmanager
