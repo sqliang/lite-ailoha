@@ -42,33 +42,9 @@ structure_conversation 工具 —— 用 VISION_MODEL 解析聊天截图。
 """
 import logging
 from langchain_core.tools import tool
-from app.config import settings
-from app.agent.llm_factory import create_chat_openai
+from app.agent.llm_factory import get_vision_llm
 
 logger = logging.getLogger(__name__)
-
-# =============================================================================
-# VISION_MODEL — 看图理解聊天截图，必须支持多模态（vision）
-# 懒加载: 首次调用 structure_conversation 时才创建实例，避免 import 时报错
-# =============================================================================
-
-_vision_llm = None
-
-
-def _get_vision_llm():
-    """懒加载 VISION_MODEL 实例。使用 llm_factory 禁用代理。"""
-    global _vision_llm
-    if _vision_llm is None:
-        logger.info("[structure.py] 创建VisionLLM | model=%s, base_url=%s",
-                     settings.vision_model, settings.vision_base_url)
-        _vision_llm = create_chat_openai(
-            model=settings.vision_model,
-            api_key=settings.vision_api_key or settings.llm_api_key or None,
-            base_url=settings.vision_base_url or settings.llm_base_url or None,
-            temperature=0.3,
-        )
-        logger.info("[structure.py] VisionLLM创建完成")
-    return _vision_llm
 
 
 # =============================================================================
@@ -155,7 +131,7 @@ def structure_conversation(user_context: str = "") -> str:
         }
     ]
 
-    response = _get_vision_llm().invoke(messages)
+    response = get_vision_llm().invoke(messages)
     logger.info("[structure.py] VisionLLM invoke完成 | output_len=%d chars", len(response.content) if response.content else 0)
     return response.content
 

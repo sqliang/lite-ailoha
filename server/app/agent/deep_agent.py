@@ -3,14 +3,17 @@ Lite Ailoha Deep Agent —— 双模型架构 + SSE 流式包装。
 
 ============================== 双模型架构 ==============================
 
-  _vision_llm (VISION_MODEL)          _text_llm (LLM_MODEL)
-       │                                      │
-       ▼                                      ▼
-  Coordinator Agent                    子 Agent (Meeting/Contact/Reminder)
-  - 看图理解聊天截图                    - 从结构化 JSON 文本中提取信息
-  - 调用 structure_conversation         - 不需要 vision 能力
-  - 调用 generate_insight               - 可选用更便宜/更快的模型
-  - 委派 task() 给子 Agent
+  LLM_MODEL (DeepSeek) — Coordinator 大脑        VISION_MODEL (豆包) — 看图工具
+       │                                                 │
+       ▼                                                 ▼
+  Coordinator Agent                              structure_conversation tool
+  - 规划任务、分发子Agent                         - 内部调用 VISION_MODEL 看图
+  - 合成结果                                     - 输出结构化对话 JSON
+  - 不直接看图
+       │
+       ├── task("meeting-agent")  → LLM_MODEL
+       ├── task("contact-agent")  → LLM_MODEL
+       └── task("reminder-agent") → LLM_MODEL
 
 ============================== SSE 事件流 ==============================
 
@@ -64,7 +67,7 @@ from app.config import settings
 from app.agent.prompts import COORDINATOR_PROMPT
 from app.agent.subagents import get_all_subagents
 from app.agent.tools import STRUCTURE_TOOLS, INSIGHT_TOOLS, set_shared_image
-from app.agent.llm_factory import create_chat_openai
+from app.agent.llm_factory import get_text_llm
 
 logger = logging.getLogger(__name__)
 
@@ -95,56 +98,35 @@ class LiteAilohaAgent:
     """
 
     def __init__(self):
-        # LLM 实例懒创建，首次调用 stream_analyze() 时才初始化
-        # 避免 import 时在没有 API key 或代理配置异常时报错
-        self._vision_llm = None
-        self._text_llm = None
+        # Agent 懒创建，首次调用 stream_analyze() 时才初始化
         self._agent = None
 
     def _ensure_initialized(self):
-        """懒初始化: 首次请求时才创建 LLM 实例和 Deep Agent。"""
+        """懒初始化: 首次请求时才创建 Deep Agent。"""
         if self._agent is not None:
             return
 
         # =================================================================
-        # [1/8] 初始化Agent — 打印配置信息
+        # [1/4] 初始化Agent — 打印配置信息
         # =================================================================
-        logger.info("[1/8] 初始化Agent | vision_model=%s@%s, llm_model=%s@%s",
-                     settings.vision_model, settings.vision_base_url,
-                     settings.llm_model, settings.llm_base_url)
+        logger.info("[1/4] 初始化Agent | coordinator=%s@%s, vision=%s@%s",
+                     settings.llm_model, settings.llm_base_url,
+                     settings.vision_model, settings.vision_base_url)
 
         # =================================================================
-        # [2/8] VISION_MODEL — Coordinator 专用，看图理解聊天截图
-        # =================================================================
-        self._vision_llm = create_chat_openai(
-            model=settings.vision_model,
-            api_key=settings.vision_api_key or settings.llm_api_key or None,
-            base_url=settings.vision_base_url or settings.llm_base_url or None,
-            temperature=0.3,
-        )
-        logger.info("[2/8] VisionLLM创建完成 | model=%s", settings.vision_model)
-
-        # =================================================================
-        # [3/8] LLM_MODEL — 子 Agent 专用，纯文本处理结构化对话 JSON
-        # =================================================================
-        self._text_llm = create_chat_openai(
-            model=settings.llm_model,
-            api_key=settings.llm_api_key or settings.vision_api_key or None,
-            base_url=settings.llm_base_url or settings.vision_base_url or None,
-            temperature=0.3,
-        )
-        logger.info("[3/8] TextLLM创建完成 | model=%s", settings.llm_model)
-
-        # =================================================================
-        # [4/8] 组装 Deep Agent
+        # [2/4] 组装 Deep Agent
+        # Coordinator = LLM_MODEL (DeepSeek) — 大脑，规划 + 分发
+        # structure_conversation 工具内部调 VISION_MODEL (豆包) — 看图
+        # 子Agent 由 get_all_subagents() 注入 LLM_MODEL — 领域提取
         # =================================================================
         self._agent = create_deep_agent(
-            model=self._vision_llm,
+            model=get_text_llm(),
             system_prompt=COORDINATOR_PROMPT,
             tools=STRUCTURE_TOOLS + INSIGHT_TOOLS,
             subagents=get_all_subagents(),
         )
-        logger.info("[4/8] DeepAgent组装完成 | tools=%d, subagents=%d",
+        logger.info("[2/4] DeepAgent组装完成 | coordinator=%s, tools=%d, subagents=%d",
+                     settings.llm_model,
                      len(STRUCTURE_TOOLS) + len(INSIGHT_TOOLS), 3)
 
     # =========================================================================
@@ -178,34 +160,30 @@ class LiteAilohaAgent:
         self._ensure_initialized()
 
         # =================================================================
-        # [5/8] 构建多模态消息: 文字指令 + 截图
+        # [3/4] 构建多模态消息: 文字指令 + 截图
         # =================================================================
-        prompt = _build_multimodal_prompt(image_base64, user_context)
-        logger.info("[5/8] 构建多模态提示词 | image=%d chars, user_context=%d chars",
+        prompt = _build_coordinator_message(image_base64, user_context)
+        logger.info("[3/4] 构建Coordinator消息 | image=%d chars, user_context=%d chars",
                      len(image_base64), len(user_context))
 
         try:
             # =================================================================
-            # [6/8] 设置共享图片数据 — structure_conversation 从共享变量读图片
+            # [4/4] 设置共享图片数据，开始 astream_events
             # 不从 LLM 参数获取 base64（LLM 无法复制 42KB+ base64 数据）
             # =================================================================
             set_shared_image(image_base64, user_context)
-            logger.info("[6/8] 已设置共享图片，开始astream_events循环")
+            logger.info("[4/4] 已设置共享图片，开始astream_events循环")
             async for event in self._agent.astream_events(
                 {"messages": [{"role": "user", "content": prompt}]},
                 version="v2",
                 config={"recursion_limit": 100},
             ):
-                # [7/8] 解析流事件
                 parsed = _parse_stream_event(event)
                 if parsed is not None:
-                    logger.info("[7/8] 流事件解析 | type=%s", parsed.get("type"))
                     yield parsed
 
-            # =================================================================
-            # [8/8] 正常完成
-            # =================================================================
-            logger.info("[8/8] 分析完成")
+            # 正常完成
+            logger.info("Agent分析完成")
             yield {"type": "done"}
 
         except Exception:
@@ -223,35 +201,26 @@ class LiteAilohaAgent:
 # 内部函数
 # =============================================================================
 
-def _build_multimodal_prompt(image_base64: str, user_context: str) -> list[dict]:
+def _build_coordinator_message(image_base64: str, user_context: str) -> str:
     """
-    构建多模态消息 —— 文字指令 + 截图图片。
+    构建发送给 Coordinator 的纯文本消息。
 
-    ============================== 消息结构 ==============================
-    返回的 content 是一个 list:
-      [{"type": "text", "text": "系统指令 + 用户补充"},
-       {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}]
+    Coordinator 使用 LLM_MODEL（DeepSeek），不支持 image_url 内容类型。
+    图片数据已通过 set_shared_image() 存入共享变量，
+    structure_conversation 工具会从共享变量读取图片并调用 VISION_MODEL。
 
-    Coordinator (GPT-4o 等多模态模型) 可以同时接收文字和图片，
-    直接"看"截图来理解对话结构和内容。
+    返回纯文本字符串（非多模态列表），避免 DeepSeek API 报 unknown variant `image_url`。
     """
-    text_prompt = COORDINATOR_PROMPT
+    text = COORDINATOR_PROMPT
     if user_context:
-        text_prompt += f"\n\n用户补充说明: {user_context}"
+        text += f"\n\n用户补充说明: {user_context}"
 
-    return [
-        {
-            "type": "text",
-            "text": text_prompt,
-        },
-        {
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/jpeg;base64,{image_base64}",
-                # 不传 detail 参数，部分 API（如 Ark）不支持
-            },
-        },
-    ]
+    text += (
+        f"\n\n[系统提示] 用户已上传一张聊天截图，"
+        f"图片数据已就绪。请立即调用 structure_conversation 工具来解析截图。"
+    )
+
+    return text
 
 
 def _parse_stream_event(event: dict) -> dict | None:
