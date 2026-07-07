@@ -17,6 +17,8 @@ Endpoints:
     GET  /health                          — Health check
 """
 from contextlib import asynccontextmanager
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -26,11 +28,18 @@ from app.api.health import router as health_router
 from app.api.sessions import router as sessions_router
 from app.storage.database import get_db, close_db
 
+# 配置日志：INFO 级别 + 清晰的时间格式，方便联调时实时观察处理进度
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Application lifespan: initialize DB on startup, close on shutdown."""
-    await get_db()  # Ensure schema is created
+    await get_db()
     yield
     await close_db()
 

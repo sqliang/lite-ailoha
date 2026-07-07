@@ -8,10 +8,10 @@ install:
 	.venv/bin/pip install -r server/requirements.txt
 
 run:
-	cd server && ../.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+	cd server && env -u all_proxy -u http_proxy -u https_proxy -u ALL_PROXY -u HTTP_PROXY -u HTTPS_PROXY ../.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 
 dev:
-	cd server && ../.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+	cd server && env -u all_proxy -u http_proxy -u https_proxy -u ALL_PROXY -u HTTP_PROXY -u HTTPS_PROXY ../.venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 
 test:
 	cd server && ../.venv/bin/pytest -v

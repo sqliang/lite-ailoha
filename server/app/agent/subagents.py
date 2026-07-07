@@ -34,7 +34,7 @@
 Reference:
     https://docs.langchain.com/oss/python/deepagents/customization
 """
-from langchain_openai import ChatOpenAI
+import logging
 from app.config import settings
 from app.agent.prompts import (
     MEETING_SUBAGENT_PROMPT,
@@ -42,6 +42,9 @@ from app.agent.prompts import (
     REMINDER_SUBAGENT_PROMPT,
 )
 from app.agent.tools import MEETING_TOOLS, CONTACT_TOOLS, REMINDER_TOOLS
+from app.agent.llm_factory import create_chat_openai
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # LLM_MODEL — 子 Agent 共用，纯文本推理（不需要 vision）
@@ -54,12 +57,15 @@ _text_llm = None
 def _get_text_llm():
     global _text_llm
     if _text_llm is None:
-        _text_llm = ChatOpenAI(
+        logger.info("[subagents.py] 创建TextLLM | model=%s, base_url=%s",
+                     settings.llm_model, settings.llm_base_url)
+        _text_llm = create_chat_openai(
             model=settings.llm_model,
             api_key=settings.llm_api_key or settings.vision_api_key or None,
             base_url=settings.llm_base_url or settings.vision_base_url or None,
             temperature=0.3,
         )
+        logger.info("[subagents.py] TextLLM创建完成")
     return _text_llm
 
 # =============================================================================

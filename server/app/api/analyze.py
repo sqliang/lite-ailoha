@@ -84,21 +84,30 @@ async def analyze(request: AnalyzeRequest):
     user_context = (request.user_context or "").strip()
 
     # =========================================================================
-    # 输入验证: image 和 user_context 至少一个非空
+    # [1/7] 收到分析请求 — 打印请求摘要
+    # =========================================================================
+    logger.info("[1/7] 收到分析请求 | image=%dKB, user_context=%dchars",
+                 len(image_b64) // 1024, len(user_context))
+
+    # =========================================================================
+    # [2/7] 输入验证: image 和 user_context 至少一个非空
     # =========================================================================
     if not image_b64 and not user_context:
+        logger.warning("[2/7] 输入验证失败 | 图片和文本均为空")
         async def error_stream():
             err = ErrorEvent(
                 code="EMPTY_INPUT",
                 message="请选择一张聊天截图，或输入文字说明",
             )
-            yield {"event": "error", "id": 1, "data": err.model_dump_json()}
+            yield {"event": "error", "id": str(1), "data": err.model_dump_json()}
         return EventSourceResponse(error_stream())
+    logger.info("[2/7] 输入验证通过")
 
     # =========================================================================
-    # 生成会话 ID — 用于后续 GET /api/v1/sessions/{id} 查询
+    # [3/7] 生成会话 ID — 用于后续 GET /api/v1/sessions/{id} 查询
     # =========================================================================
     session_id = str(uuid.uuid4())
+    logger.info("[3/7] 生成会话ID | session_id=%s", session_id)
 
     async def event_stream():
         event_id = 0
@@ -111,6 +120,10 @@ async def analyze(request: AnalyzeRequest):
         insight_text: str = ""
 
         try:
+            # =================================================================
+            # [4/7] 开始 SSE 流式分析
+            # =================================================================
+            logger.info("[4/7] 开始SSE流式分析 | session_id=%s", session_id)
             async for event in _get_agent().stream_analyze(image_b64, user_context):
                 event_id += 1
                 event_type = event["type"]
@@ -125,9 +138,12 @@ async def analyze(request: AnalyzeRequest):
                         )
                         yield {
                             "event": "struct",
-                            "id": event_id,
+                            "id": str(event_id),
                             "data": struct_event.model_dump_json(),
                         }
+                        logger.info("[5/7] SSE事件→struct | participants=%d, messages=%d",
+                                     len(structured.get("participants", [])),
+                                     len(structured.get("messages", [])))
 
                     # --- 动作卡片 (子 Agent tool call 结果) ---
                     case "card":
@@ -141,9 +157,11 @@ async def analyze(request: AnalyzeRequest):
                         card_event = CardEvent(card=card)
                         yield {
                             "event": "card",
-                            "id": event_id,
+                            "id": str(event_id),
                             "data": card_event.model_dump_json(),
                         }
+                        logger.info("[5/7] SSE事件→card | type=%s, summary=%s",
+                                     card_data["type"], card_data["summary"][:50])
 
                     # --- AI 洞察 (generate_insight tool 结果) ---
                     case "insight":
@@ -151,9 +169,11 @@ async def analyze(request: AnalyzeRequest):
                         insight_event = InsightEvent(insight=insight_text)
                         yield {
                             "event": "insight",
-                            "id": event_id,
+                            "id": str(event_id),
                             "data": insight_event.model_dump_json(),
                         }
+                        logger.info("[5/7] SSE事件→insight | text_len=%dchars",
+                                     len(insight_text))
 
                     # --- 错误事件 ---
                     case "error":
@@ -163,21 +183,24 @@ async def analyze(request: AnalyzeRequest):
                         )
                         yield {
                             "event": "error",
-                            "id": event_id,
+                            "id": str(event_id),
                             "data": err.model_dump_json(),
                         }
+                        logger.error("[5/7] SSE事件→error | code=%s, msg=%s",
+                                      err.code, err.message)
 
                     # --- 流结束 ---
                     case "done":
                         done = DoneEvent()
                         yield {
                             "event": "done",
-                            "id": event_id,
+                            "id": str(event_id),
                             "data": done.model_dump_json(),
                         }
+                        logger.info("[5/7] SSE事件→done | total_events=%d", event_id)
 
             # =================================================================
-            # SSE 流完成后，将本次分析的完整数据写入 analyze_sessions 表
+            # [6/7] SSE 流完成后，将本次分析的完整数据写入 analyze_sessions 表
             # 存储内容:
             #   - session_id: 唯一标识，可通过 GET /api/v1/sessions/{id} 查询
             #   - structured_conversation: VISION_MODEL 的结构化对话 JSON
@@ -198,17 +221,18 @@ async def analyze(request: AnalyzeRequest):
                     ),
                 )
                 await db.commit()
-                logger.info("Session %s persisted: %d cards", session_id, len(cards))
+                logger.info("[6/7] 持久化完成 | session_id=%s, cards=%d, insight=%dchars",
+                             session_id, len(cards), len(insight_text))
             except Exception as db_err:
-                logger.error("Failed to persist session %s: %s", session_id, db_err)
+                logger.error("[6/7] 持久化失败 | session_id=%s, error=%s", session_id, db_err)
 
         except Exception:
-            logger.exception("SSE stream error for session %s", session_id)
+            logger.exception("[7/7] SSE流异常 | session_id=%s", session_id)
             event_id += 1
             err = ErrorEvent(code="INTERNAL_ERROR", message="服务端内部异常，请稍后重试")
             yield {
                 "event": "error",
-                "id": event_id,
+                "id": str(event_id),
                 "data": err.model_dump_json(),
             }
 
