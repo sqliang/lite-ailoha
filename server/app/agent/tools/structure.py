@@ -131,9 +131,27 @@ def structure_conversation(user_context: str = "") -> str:
         }
     ]
 
-    response = get_vision_llm().invoke(messages)
-    logger.info("[structure.py] VisionLLM invoke完成 | output_len=%d chars", len(response.content) if response.content else 0)
-    return response.content
+    import json as _json
+    from app.agent.validators import validate_json_output, StructConversationSchema
+
+    def _retry(last_output: str, error: str) -> str:
+        """重试: 用错误反馈追加到 messages，再次调用 VisionLLM。"""
+        retry_msgs = messages + [
+            {"role": "assistant", "content": str(last_output)[:2000]},
+            {"role": "user", "content": f"输出格式错误: {error}\n请严格按 JSON 格式重新输出，不要包含额外文字。"},
+        ]
+        return get_vision_llm().invoke(retry_msgs).content
+
+    raw_output = get_vision_llm().invoke(messages).content
+    result = validate_json_output(
+        output=raw_output,
+        schema=StructConversationSchema,
+        tool_name="structure_conversation",
+        retry_fn=_retry,
+    )
+    logger.info("[structure.py] VisionLLM invoke完成 | valid=%s, len=%d",
+                "error" not in result, len(_json.dumps(result, ensure_ascii=False)))
+    return _json.dumps(result, ensure_ascii=False)
 
 
 # =============================================================================
