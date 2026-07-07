@@ -1,59 +1,104 @@
 
-
-# 项目任务：Lite Ailoha
+# Lite Ailoha — 产品需求文档
 
 ## 1. 项目描述
 
-Lite Ailoha 是一个基于 ios swift 开发的 app，用于帮助用户管理他们的联系人和会议。
+Lite Ailoha 是一个基于 iOS Swift 开发的 App，帮助用户通过上传聊天截图，自动识别可执行的行动项（会议、联系人、提醒），生成可确认的动作卡片，并基于上下文提供洞察建议。
 
-### 时间限制
-- 24 小时内实现
-- 周三沟通，所以周二下午需要交付
+## 2. 需求目标
 
-### 需求目标
+1. 用户上传一张聊天截图，可附带补充文字说明。
+2. 系统理解截图中的上下文，识别可执行的行动，生成用户可确认的 **Action Cards**（创建会议、创建联系人、更新联系人、创建提醒）。
+3. 用户确认卡片后，系统结合联系人数据与上下文，生成洞察与建议。
+4. 支持事后质量评估：每次分析结果持久化存储，可对照原始截图复核准确率。
 
-1、用户上传一张聊天截图，也可以附加一段补充文字。
-2、系统需要**理解截图里的上下文，识别可以执行的行动并生成用户可确认的 action cards**（主要有 创建会议，创建联系人，更新联系人）。
-3、用户确认卡片后，结合用户的联系人数据以及当前上下文生成对用户有帮助的洞察和建议。
+## 3. 功能拆解
 
-### 交付形式
+### 3.1 输入
 
-1、最终交付的话产品形式为 基于 ios swift 开发的 app
-2、github repo 存储项目的代码和文档
-3、可运行的测试环境（本地和云上部署都可以）
+- **聊天截图**：支持相册选择或相机拍摄，JPEG/PNG 格式
+- **补充文字**：用户可选，用于提供额外上下文（如参与者身份）
 
-### 其他
+### 3.2 处理管道
 
-明天你有一整天的时间 build，鼓励使用任意ai，然后周三我们约个时间一起聊一下，有任何问题都随时联系我哈
+```
+聊天截图 + 补充文字
+  → iOS ImageProcessor 压缩（max 1024px, JPEG 0.7）
+  → POST base64 到服务端
+  → VISION_MODEL 看图 → 结构化对话 JSON {participants, messages}
+  → LLM_MODEL 子Agent 分析结构化 JSON
+    ├── Meeting Agent → 识别会议安排
+    ├── Contact Agent → 识别联系人创建/更新
+    └── Reminder Agent → 识别提醒事项
+  → generate_insight → 跨域洞察建议
+  → SSE 流式返回 (struct → card × N → insight → done)
+  → 写入 analyze_sessions 表（质量评估回路）
+```
 
+### 3.3 输出 — Action Cards
 
-## 2. 需求拆解与分析
+4 种 canonical action card 类型：
 
-### 需求拆解
+| 类型 | 中文标签 | 生成条件 |
+|------|---------|---------|
+| `create_meeting` | 创建会议 | 对话中包含会议时间、参与人、主题 |
+| `create_contact` | 创建联系人 | 对话中出现新联系人的姓名、电话等 |
+| `update_contact` | 更新联系人 | 对话中提到已有联系人的信息变更 |
+| `create_reminder` | 创建提醒 | 对话中包含待办事项、截止时间 |
 
-- **输入**：聊天截图（图片）+ 可选补充文字。
-- **处理**：OCR 提取文字 → 语义理解（结合补充文字）→ 识别可执行动作（创建会议/创建联系人/更新联系人）。需要 server 端基于 LangChain 生态下的 DeepAgents 来实现。
-- **输出**：Action Cards（用户可确认/取消）。
-- **确认后**：调用系统 API（日历、通讯录）执行操作，并基于联系人数据生成洞察建议（如“该联系人已有3次会议，建议更新备注”）。需要 server 端基于 LangChain 生态下的 DeepAgents 来实现。
+每张卡片包含唯一 ID、类型、摘要，用户可确认或取消。
 
+### 3.4 确认后
 
-### UI 设计
+- 确认的卡片持久化到 Core Data（iOS 端）
+- 异步通知服务端 (`POST /api/v1/actions/{id}/confirm`)
+- Toast 提示操作结果
+- 系统生成洞察建议（如"该联系人已有 3 次会议"）
 
-- **主界面**：一个“上传截图”按钮（支持相册或拍照），一个“补充文字”文本框，一个“开始分析”按钮。
-- 结果界面：以卡片列表展示多个Action Card，每个卡片包含动作类型、摘要、确认/取消按钮。
-- **确认界面**：用户确认或取消操作，Toast提示成功/失败。
-- **执行反馈的建议界面**：显示系统生成的洞察建议。
+## 4. UI 设计
 
+- **主界面**：图片预览区 + 相册/拍照按钮 + 补充文字输入框 + 开始分析按钮
+- **分析中**：按钮变灰，显示进度指示器
+- **结果区**：
+  - 结构化对话（可折叠查看，显示参与人和逐条消息）
+  - Action Card 列表（类型图标 + 摘要 + 确认/取消按钮）
+  - 洞察建议卡片（灯泡图标 + 建议文本）
+- **反馈**：顶部 Toast 浮动提示（成功绿色 / 失败红色，2 秒自动消失）
 
-### 技术选型
+## 5. Mock 模式
 
-设计一套以 LangChain DeepAgents 为核心的 C/S 架构方案。
+iOS 客户端支持 Mock 模式（`AnalysisService.useMock = true`），无需服务端即可测试完整 UI：
 
-- 客户端：ios swift 开发
-- Server 端：
-  - Python + FastAPI
-  - 模型：多模型组合
-  - 基于 LangChain 生态下的 DeepAgents 实现
+- 返回 4 种 canonical card 类型的模拟数据
+- 模拟 400ms-500ms 的 SSE 事件间隔
+- 覆盖结构展示、卡片渲染、确认/取消、Toast 反馈全部流程
 
+## 6. 质量评估回路
 
+```
+POST /api/v1/analyze → 分析完成
+  → INSERT INTO analyze_sessions (session_id, structured_conversation, cards, insight)
+  → GET /api/v1/sessions/{id} 可随时查询
+  → 对照原始截图，评估 VISION_MODEL 的结构化准确率
+  → 对照结构化对话，评估 LLM_MODEL 的卡片提取准确率
+```
 
+## 7. 技术选型
+
+| 层 | 技术 | 选型原因 |
+|----|------|---------|
+| iOS 客户端 | SwiftUI + MVVM + Core Data | 原生性能，声明式 UI，本地持久化 |
+| 服务端框架 | Python 3.11 + FastAPI | 异步支持，SSE 流式响应 |
+| AI 框架 | LangChain + LangGraph + DeepAgents | Coordinator + Subagent 分层架构 |
+| 视觉模型 | 多模态 LLM（可配） | GPT-4o / Qwen-VL / GLM-4V / doubao-seed-evolving |
+| 文本模型 | 纯文本 LLM（可配） | DeepSeek / Moonshot / GPT-4o |
+| 通信协议 | SSE (Server-Sent Events) | 单向流式推送，逐事件实时渲染 |
+| 存储 | SQLite (WAL 模式) | 零运维，适合本地开发与测试 |
+| 代理处理 | httpx 自定义 transport | 避免系统代理干扰 LLM API 调用 |
+
+## 8. 交付形式
+
+1. iOS Swift App（Xcode 项目）
+2. Python FastAPI Server
+3. GitHub 仓库（含完整文档）
+4. 可运行测试环境（本地 localhost:8080）
