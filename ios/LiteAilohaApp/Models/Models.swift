@@ -154,6 +154,8 @@ enum StreamEvent: Sendable {
     case error(ErrorPayload)
     /// 流结束标记
     case done
+    /// 会话状态变更
+    case state(String)
 }
 
 /// 通用 SSE 数据行解码容器。
@@ -179,6 +181,8 @@ enum StreamEvent: Sendable {
 struct StreamPayload: Codable, Sendable {
     /// SSE 事件类型（"struct" | "card" | "insight" | "error" | "done"）
     let event: String
+    /// 会话状态（所有事件共有，如 "STRUCTURED" / "EXTRACTING" / "READY"）
+    let sessionState: String?
     /// `event:card` 时填充：单张动作卡片数据
     let card: ActionCard?
     /// `event:insight` 时填充：洞察文本
@@ -193,6 +197,12 @@ struct StreamPayload: Codable, Sendable {
     let messages: [StructMessage]?
     /// 预留字段：键值对形式的额外数据
     let data: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case event
+        case sessionState = "session_state"
+        case card, insight, code, message, participants, messages, data
+    }
 }
 
 // MARK: - 错误模型

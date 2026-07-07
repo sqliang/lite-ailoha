@@ -367,6 +367,10 @@ event:card
 id:2
 data:{"session_state":"EXTRACTING","card":{"id":"create_reminder-abc","type":"create_reminder","summary":"..."}}
 
+event:status
+id:3
+data:{"step":"extracting","action":"create_meeting","message":"正在识别会议安排..."}
+
 event:done
 id:3
 data:{"session_state":"READY","event":"done"}

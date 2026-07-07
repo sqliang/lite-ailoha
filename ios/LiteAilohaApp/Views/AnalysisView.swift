@@ -1,8 +1,6 @@
 import SwiftUI
 
-/// 分析页：组装 4 个功能区域 + Toast 覆盖层。
-///
-/// 作为 NavigationStack 中的一个页面，后续可 push 到其他页面。
+/// 分析页 — AI Native 布局：状态区在顶部，卡片居中，输入区固定在底部。
 struct AnalysisView: View {
 
     @StateObject private var vm = AnalysisViewModel()
@@ -12,60 +10,99 @@ struct AnalysisView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                // 内容区域（可滚动）
                 ScrollView {
-                    VStack(spacing: 20) {
-                        // 1. 输入区域
-                        InputSection(
-                            imageData: $imageData,
-                            supplementText: $supplementText,
-                            isAnalyzing: vm.isAnalyzing,
-                            onAnalyze: { vm.startAnalysis(imageData: imageData, userContext: supplementText) }
-                        )
+                    VStack(spacing: 16) {
 
-                        // 2. Agent 状态区域
-                        if vm.sessionState != nil {
-                            StatusSection(state: vm.sessionState)
+                        // Agent 状态（分析中始终可见）
+                        if vm.isAnalyzing || vm.sessionState != nil {
+                            StatusSection(
+                                state: vm.sessionState,
+                                structure: vm.structure,
+                                cardCount: vm.cards.count,
+                                isAnalyzing: vm.isAnalyzing
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                         }
 
-                        // 3. 查看结构化对话入口（分析完成后显示）
+                        // 会话详情入口
                         if vm.hasStructure, let sp = vm.structure {
                             NavigationLink {
                                 SessionDetailView(structure: sp)
                             } label: {
-                                Label("查看分析详情", systemImage: "text.bubble")
-                                    .font(.subheadline.bold())
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 14)
-                                    .background(Color(.secondarySystemBackground))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                HStack {
+                                    Label("查看分析详情", systemImage: "text.bubble")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(12)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                             }
                         }
 
-                        // 4. 卡片列表区域
-                        if !vm.cards.isEmpty || vm.isAnalyzing {
-                            CardsSection(
-                                cards: vm.cards,
-                                onConfirm: { vm.confirm($0) },
-                                onCancel: { vm.cancel($0) }
-                            )
+                        // 卡片列表（核心区域）
+                        if !vm.cards.isEmpty {
+                            ForEach(vm.cards) { card in
+                                ActionCardView(
+                                    card: card,
+                                    typeLabel: CardIconHelper.label(for: card.type),
+                                    onConfirm: { vm.confirm(card) },
+                                    onCancel: { vm.cancel(card) }
+                                )
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                            }
+                            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: vm.cards.count)
                         }
 
-                        // 5. 洞察建议区域
+                        // 空状态
+                        if vm.cards.isEmpty && !vm.isAnalyzing {
+                            VStack(spacing: 12) {
+                                Image(systemName: "sparkles")
+                                    .font(.largeTitle)
+                                    .foregroundStyle(.secondary)
+                                Text("上传聊天截图，让 AI 帮你\n识别会议、联系人和提醒事项")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .padding(.vertical, 60)
+                        }
+
+                        // 洞察区域
                         InsightSection(insight: vm.insight)
                     }
-                    .padding()
+                    .padding(16)
                 }
 
-                // Toast 覆盖层
+                // 输入区域（固定底部）
+                InputSection(
+                    imageData: $imageData,
+                    supplementText: $supplementText,
+                    isAnalyzing: vm.isAnalyzing,
+                    onAnalyze: { vm.startAnalysis(imageData: imageData, userContext: supplementText) },
+                    onCancel: { vm.cancelAnalysis() }
+                )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(.bar)
+            }
+            .navigationTitle("Lite Ailoha")
+            .navigationBarTitleDisplayMode(.inline)
+            .animation(.spring(), value: vm.toastMessage)
+
+            // Toast
+            .overlay(alignment: .top) {
                 if let toast = vm.toastMessage {
                     ToastView(message: toast, success: vm.toastIsSuccess)
                         .transition(.move(edge: .top).combined(with: .opacity))
-                        .padding(.top, 8)
+                        .padding(.top, 4)
+                        .padding(.horizontal, 16)
                 }
             }
-            .animation(.spring(), value: vm.toastMessage)
-            .navigationTitle("Lite Ailoha")
         }
     }
 }
