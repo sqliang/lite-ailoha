@@ -87,8 +87,9 @@ struct ActionCardView: View {
     private var icon: String {
         switch card.type {
         case "create_meeting": return "calendar.badge.plus"
-        case "add_contact": return "person.crop.circle.badge.plus"
-        case "set_reminder": return "bell.badge"
+        case "create_contact": return "person.crop.circle.badge.plus"
+        case "update_contact": return "person.text.rectangle"
+        case "create_reminder": return "bell.badge"
         default: return "square.and.pencil"
         }
     }
