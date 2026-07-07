@@ -81,7 +81,8 @@ final class AnalysisService: @unchecked Sendable {
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": ""])
         print("[AnalysisService] 确认操作卡片 → cardId: \(cardId), URL: \(url.absoluteString)")
-        let (_, res) = try await self.session.data(for: r)
+        let (data, res) = try await self.session.data(for: r)
+        if let body = String(data: data, encoding: .utf8) { print("[AnalysisService] ◀︎ 确认响应: \(body)") }
         guard let http = res as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw AnalysisError.badResponse }
     }
 
@@ -97,7 +98,8 @@ final class AnalysisService: @unchecked Sendable {
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": ""])
         print("[AnalysisService] 取消操作卡片 → cardId: \(cardId), URL: \(url.absoluteString)")
-        let (_, res) = try await self.session.data(for: r)
+        let (data, res) = try await self.session.data(for: r)
+        if let body = String(data: data, encoding: .utf8) { print("[AnalysisService] ◀︎ 取消响应: \(body)") }
         guard let http = res as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw AnalysisError.badResponse }
     }
 
@@ -129,12 +131,21 @@ final class AnalysisService: @unchecked Sendable {
                     guard let http = res as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw AnalysisError.badResponse }
                     var curEvent: String? = nil
                     // SSE 协议解析：event: 行记录事件类型 → data: 行触发 emit() 分发
+                    print("[AnalysisService] === SSE 流开始 ===")
                     for try await line in bytes.lines {
-                        if line.hasPrefix("event:") { curEvent = line.dropFirst(6).trimmingCharacters(in: .whitespaces); continue }
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        if line.hasPrefix("event:") {
+                            curEvent = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                            print("[AnalysisService] ◀︎ event: \(curEvent ?? "(nil)")")
+                            continue
+                        }
                         guard line.hasPrefix("data:") else { continue }
-                        self.emit(event: curEvent, data: line.dropFirst(5).trimmingCharacters(in: .whitespaces), to: continuation)
+                        let jsonStr = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        print("[AnalysisService] ◀︎ data: \(jsonStr.prefix(500))")
+                        self.emit(event: curEvent, data: jsonStr, to: continuation)
                         curEvent = nil
                     }
+                    print("[AnalysisService] === SSE 流结束 ===")
                     continuation.finish()
                 } catch { continuation.finish(throwing: AnalysisError.network(error.localizedDescription)) }
             }
@@ -168,22 +179,50 @@ final class AnalysisService: @unchecked Sendable {
         if let d = json.data(using: .utf8), let p = try? JSONDecoder().decode(StreamPayload.self, from: d) {
             switch p.event {
             case "struct":
-                if let pp = p.participants, let mm = p.messages { c.yield(.structure(StructPayload(event: "struct", participants: pp, messages: mm))); return }
-            case "card": if let card = p.card { c.yield(.card(card)); return }
-            case "insight": if let ins = p.insight { c.yield(.insight(ins)); return }
-            case "error": if let code = p.code, let msg = p.message { c.yield(.error(ErrorPayload(code: code, message: msg))); return }
-            case "done": c.yield(.done); return
+                if let pp = p.participants, let mm = p.messages {
+                    print("[AnalysisService] ✅ 解析→struct | participants=\(pp.count), messages=\(mm.count)")
+                    c.yield(.structure(StructPayload(event: "struct", participants: pp, messages: mm))); return
+                }
+            case "card": if let card = p.card {
+                print("[AnalysisService] ✅ 解析→card | type=\(card.type), summary=\(card.summary.prefix(60))")
+                c.yield(.card(card)); return
+            }
+            case "insight": if let ins = p.insight {
+                print("[AnalysisService] ✅ 解析→insight | text=\(ins.prefix(120))")
+                c.yield(.insight(ins)); return
+            }
+            case "error": if let code = p.code, let msg = p.message {
+                print("[AnalysisService] ❌ 解析→error | code=\(code), message=\(msg)")
+                c.yield(.error(ErrorPayload(code: code, message: msg))); return
+            }
+            case "done":
+                print("[AnalysisService] ✅ 解析→done")
+                c.yield(.done); return
             default: break
             }
         }
         // === 第二层：Fallback — 按 SSE event: header 直接解码对应类型 ===
         guard let d = json.data(using: .utf8) else { return }
         switch event {
-        case "struct": if let sp = try? JSONDecoder().decode(StructPayload.self, from: d) { c.yield(.structure(sp)) }
-        case "card": if let card = try? JSONDecoder().decode(ActionCard.self, from: d) { c.yield(.card(card)) }
-        case "insight": if let p = try? JSONDecoder().decode(StreamPayload.self, from: d), let ins = p.insight { c.yield(.insight(ins)) }
-        case "error": if let ep = try? JSONDecoder().decode(ErrorPayload.self, from: d) { c.yield(.error(ep)) }
-        case "done": c.yield(.done)
+        case "struct": if let sp = try? JSONDecoder().decode(StructPayload.self, from: d) {
+            print("[AnalysisService] ✅ fallback→struct | participants=\(sp.participants.count)")
+            c.yield(.structure(sp))
+        }
+        case "card": if let card = try? JSONDecoder().decode(ActionCard.self, from: d) {
+            print("[AnalysisService] ✅ fallback→card | type=\(card.type)")
+            c.yield(.card(card))
+        }
+        case "insight": if let p = try? JSONDecoder().decode(StreamPayload.self, from: d), let ins = p.insight {
+            print("[AnalysisService] ✅ fallback→insight | text=\(ins.prefix(120))")
+            c.yield(.insight(ins))
+        }
+        case "error": if let ep = try? JSONDecoder().decode(ErrorPayload.self, from: d) {
+            print("[AnalysisService] ❌ fallback→error | code=\(ep.code)")
+            c.yield(.error(ep))
+        }
+        case "done":
+            print("[AnalysisService] ✅ fallback→done")
+            c.yield(.done)
         default: break
         }
     }
