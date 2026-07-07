@@ -9,7 +9,6 @@ struct AnalysisView: View {
 
     @State private var imageData: Data?
     @State private var supplementText: String = ""
-    @State private var showStructure = false
 
     var body: some View {
         NavigationStack {
@@ -29,9 +28,18 @@ struct AnalysisView: View {
                             StatusSection(state: vm.sessionState)
                         }
 
-                        // 3. 结构化对话（可折叠）
-                        if vm.hasStructure {
-                            StructureSection(structure: vm.structure, showStructure: $showStructure)
+                        // 3. 查看结构化对话入口（分析完成后显示）
+                        if vm.hasStructure, let sp = vm.structure {
+                            NavigationLink {
+                                SessionDetailView(structure: sp)
+                            } label: {
+                                Label("查看分析详情", systemImage: "text.bubble")
+                                    .font(.subheadline.bold())
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 14)
+                                    .background(Color(.secondarySystemBackground))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                            }
                         }
 
                         // 4. 卡片列表区域
