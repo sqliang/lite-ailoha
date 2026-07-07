@@ -577,7 +577,6 @@ server/
 │   │   ├── __init__.py                  # 导出 LiteAilohaAgent
 │   │   ├── deep_agent.py                # LiteAilohaAgent：create_deep_agent + stream_analyze
 │   │   ├── llm_factory.py               # LLM 实例工厂：get_vision_llm() / get_text_llm()
-│   │   ├── subagents.py                 # 三个子 Agent 定义（meeting / contact / reminder）
 │   │   │
 │   │   ├── prompts/                     # 系统提示词（一个 Agent 一个文件）
 │   │   │   ├── __init__.py
@@ -585,6 +584,12 @@ server/
 │   │   │   ├── meeting.py               # 会议子 Agent 提示词
 │   │   │   ├── contact.py               # 联系人子 Agent 提示词
 │   │   │   └── reminder.py              # 提醒子 Agent 提示词
+│   │   │
+│   │   ├── subagents/                   # 子 Agent 定义（一个领域一个文件）
+│   │   │   ├── __init__.py              # 统一导出 get_all_subagents()
+│   │   │   ├── meeting.py               # meeting-agent：name, description, prompt, tools, model
+│   │   │   ├── contact.py               # contact-agent：create + update
+│   │   │   └── reminder.py              # reminder-agent
 │   │   │
 │   │   └── tools/                       # Agent 可调用的工具函数
 │   │       ├── __init__.py              # 工具分组注册
@@ -661,7 +666,11 @@ server/
 | 文件 | 对应 DeepAgents 概念 | 职责 |
 |------|---------------------|------|
 | `deep_agent.py` | `create_deep_agent()` | 组装 Agent：Coordinator + tools + subagents |
-| `subagents.py` | `subagents` 参数 | 三个子 Agent 的定义（name/description/prompt/tools/model） |
+| `subagents/` | `subagents` 参数 | 子 Agent 定义目录，一个领域一个文件 |
+| `subagents/__init__.py` | — | 统一导出 `get_all_subagents()` |
+| `subagents/meeting.py` | meeting-agent | name, description, system_prompt, tools, model |
+| `subagents/contact.py` | contact-agent | name, description, system_prompt, tools, model |
+| `subagents/reminder.py` | reminder-agent | name, description, system_prompt, tools, model |
 | `prompts/` | `system_prompt` | 每个 Agent 的系统提示词 |
 | `tools/` | `tools` 参数 | 可被调用的工具函数 |
 | `llm_factory.py` | `model` 参数 | 提供 LLM 实例 |
@@ -672,7 +681,7 @@ server/
 deep_agent.py
   │
   ├── 从 llm_factory.py 获取 get_text_llm() → Coordinator 大脑
-  ├── 从 subagents.py  获取三个子 Agent 定义（已注入 get_text_llm()）
+  ├── 从 subagents/    获取三个子 Agent 定义（meeting/contact/reminder）
   ├── 从 tools/        获取工具列表（structure, meeting, contact, reminder, insight）
   ├── 从 prompts/      获取系统提示词（coordinator + 三个子 agent）
   │
@@ -732,7 +741,7 @@ agent/deep_agent.py:
 |------|------|
 | `server/app/agent/llm_factory.py` | 统一 `get_vision_llm()` / `get_text_llm()` 单例 |
 | `server/app/agent/deep_agent.py` | Coordinator 改用 `get_text_llm()`；删除 `_text_llm`；不生成 insight |
-| `server/app/agent/subagents.py` | 改用 `llm_factory.get_text_llm()` |
+| `server/app/agent/subagents.py` | 拆分为 `subagents/` 目录（meeting.py / contact.py / reminder.py），统一改用 `llm_factory.get_text_llm()` |
 | `server/app/agent/tools/structure.py` | 改用 `llm_factory.get_vision_llm()`；删独立 LLM 实例 |
 | `server/app/agent/__init__.py` | 调整导出 |
 | `server/app/api/analyze.py` | SSE 事件加 `session_state`；去掉 insight；加状态更新 |
