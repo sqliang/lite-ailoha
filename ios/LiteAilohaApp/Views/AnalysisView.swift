@@ -11,20 +11,21 @@ struct AnalysisView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Agent 状态（pinned 顶部，始终可见）
+                if vm.isAnalyzing || vm.sessionState != nil {
+                    StatusSection(
+                        state: vm.sessionState,
+                        structure: vm.structure,
+                        cardCount: vm.cards.count,
+                        isAnalyzing: vm.isAnalyzing
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                }
+
                 // 内容区域（可滚动）
                 ScrollView {
                     VStack(spacing: 16) {
-
-                        // Agent 状态（分析中始终可见）
-                        if vm.isAnalyzing || vm.sessionState != nil {
-                            StatusSection(
-                                state: vm.sessionState,
-                                structure: vm.structure,
-                                cardCount: vm.cards.count,
-                                isAnalyzing: vm.isAnalyzing
-                            )
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
 
                         // 会话详情入口
                         if vm.hasStructure, let sp = vm.structure {
@@ -51,7 +52,8 @@ struct AnalysisView: View {
                                     card: card,
                                     typeLabel: CardIconHelper.label(for: card.type),
                                     onConfirm: { vm.confirm(card) },
-                                    onCancel: { vm.cancel(card) }
+                                    onCancel: { vm.cancel(card) },
+                                    onAction: { action in vm.handleAction(card, action) }
                                 )
                                 .transition(.opacity.combined(with: .scale(scale: 0.95)))
                             }
@@ -83,6 +85,7 @@ struct AnalysisView: View {
                     imageData: $imageData,
                     supplementText: $supplementText,
                     isAnalyzing: vm.isAnalyzing,
+                    sessionState: vm.sessionState,
                     onAnalyze: { vm.startAnalysis(imageData: imageData, userContext: supplementText) },
                     onCancel: { vm.cancelAnalysis() }
                 )

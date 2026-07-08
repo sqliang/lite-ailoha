@@ -108,8 +108,30 @@ struct ActionCard: Identifiable, Codable, Equatable, Sendable {
     /// 卡片确认状态（纯客户端状态，不从 JSON 解码）
     var status: CardStatus = .pending
 
-    /// 显式声明编解码键，排除 `status`（客户端状态不参与序列化）
+    /// 阶段二返回的洞察（逐卡片绑定）
+    var insight: CardInsight? = nil
+
+    /// 显式声明编解码键，排除客户端状态
     enum CodingKeys: String, CodingKey { case id, type, summary }
+}
+
+/// 单张卡片的洞察结果，由阶段二 InsightAgent 返回。
+struct CardInsight: Codable, Equatable, Sendable {
+    let cardId: String
+    let verdict: String
+    let title: String
+    let analysis: String
+    let recommendation: String
+    let actions: [InsightAction]
+
+    enum CodingKeys: String, CodingKey {
+        case cardId = "card_id", verdict, title, analysis, recommendation, actions
+    }
+}
+
+struct InsightAction: Codable, Equatable, Sendable {
+    let label: String
+    let type: String
 }
 
 /// 卡片确认状态（纯客户端概念，不传输到服务端）。
@@ -179,8 +201,8 @@ enum StreamEvent: Sendable {
 /// 1. 先尝试用 `StreamPayload` 解码（通用容器 + event 字段分发）
 /// 2. 失败时 fallback 到按 SSE `event:` header 直接解码对应类型
 struct StreamPayload: Codable, Sendable {
-    /// SSE 事件类型（"struct" | "card" | "insight" | "error" | "done"）
-    let event: String
+    /// SSE 事件类型，meta/status 事件无此字段故为 Optional
+    let event: String?
     /// 会话状态（所有事件共有，如 "STRUCTURED" / "EXTRACTING" / "READY"）
     let sessionState: String?
     /// `event:card` 时填充：单张动作卡片数据
@@ -195,12 +217,15 @@ struct StreamPayload: Codable, Sendable {
     let participants: [String]?
     /// `event:struct` 时填充：消息列表
     let messages: [StructMessage]?
+    /// `event:meta` 时填充：会话 ID
+    let sessionId: String?
     /// 预留字段：键值对形式的额外数据
     let data: [String: String]?
 
     enum CodingKeys: String, CodingKey {
         case event
         case sessionState = "session_state"
+        case sessionId = "session_id"
         case card, insight, code, message, participants, messages, data
     }
 }

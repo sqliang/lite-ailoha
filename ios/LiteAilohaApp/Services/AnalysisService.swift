@@ -59,6 +59,51 @@ final class AnalysisService: @unchecked Sendable {
         return URLSession(configuration: c)
     }()
 
+    nonisolated func executeAction(cardId: String) async throws {
+        guard !useMock else { return }
+        let url = endpoint.deletingLastPathComponent().appendingPathComponent("actions").appendingPathComponent(cardId).appendingPathComponent("execute")
+        var r = URLRequest(url: url); r.httpMethod = "POST"
+        print("[AnalysisService] 执行操作 → cardId: \(cardId)")
+        let (data, res) = try await self.session.data(for: r)
+        if let body = String(data: data, encoding: .utf8) { print("[AnalysisService] ◀︎ 执行响应: \(body)") }
+        guard let http = res as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw AnalysisError.badResponse }
+    }
+
+    /// 阶段二：请求洞察建议
+    nonisolated func requestInsight(sessionId: String, cardId: String, cardType: String, cardSummary: String,
+                                     deviceContacts: [[String: Any]], deviceEvents: [[String: Any]], deviceReminders: [[String: Any]]) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached {
+                do {
+                    let url = self.endpoint.deletingLastPathComponent().appendingPathComponent("sessions").appendingPathComponent(sessionId).appendingPathComponent("insight")
+                    var req = URLRequest(url: url); req.httpMethod = "POST"
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    let body: [String: Any] = [
+                        "card_id": cardId, "card_type": cardType, "card_summary": cardSummary,
+                        "device_contacts": deviceContacts, "device_events": deviceEvents, "device_reminders": deviceReminders,
+                    ]
+                    req.httpBody = try JSONSerialization.data(withJSONObject: body)
+                    print("[AnalysisService] 请求洞察 → sessionId=\(sessionId) cardId=\(cardId)")
+                    let (bytes, res) = try await self.session.bytes(for: req)
+                    guard let http = res as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw AnalysisError.badResponse }
+                    var curEvent: String? = nil
+                    for try await line in bytes.lines {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        if trimmed.hasPrefix("event:") { curEvent = String(trimmed.dropFirst(6)).trimmingCharacters(in: .whitespaces); continue }
+                        guard trimmed.hasPrefix("data:") else { continue }
+                        let jsonStr = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                        print("[AnalysisService] ◀︎ insight data: \(jsonStr.prefix(300))")
+                        self.emit(event: curEvent, data: jsonStr, to: continuation)
+                        curEvent = nil
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: AnalysisError.network(error.localizedDescription)) }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// 分析入口 — 根据 `useMock` 标志分发生成 Mock 数据还是真实网络请求。
     ///
     /// - Parameters:
@@ -73,14 +118,13 @@ final class AnalysisService: @unchecked Sendable {
     /// 输入：cardId（操作卡片的唯一 ID）
     /// 请求体：{"session_id": ""}
     /// 响应：标准 HTTP 状态码，200-299 为成功
-    nonisolated func confirmAction(cardId: String) async throws {
+    nonisolated func confirmAction(cardId: String, cardType: String = "", cardSummary: String = "") async throws {
         guard !useMock else { return }
-        // 从 analyze 端点推导 actions 端点：/api/v1/analyze → /api/v1/actions/{id}/confirm
         let url = endpoint.deletingLastPathComponent().appendingPathComponent("actions").appendingPathComponent(cardId).appendingPathComponent("confirm")
         var r = URLRequest(url: url); r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": ""])
-        print("[AnalysisService] 确认操作卡片 → cardId: \(cardId), URL: \(url.absoluteString)")
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": "", "type": cardType, "summary": cardSummary])
+        print("[AnalysisService] 确认操作卡片 → cardId: \(cardId) type: \(cardType)")
         let (data, res) = try await self.session.data(for: r)
         if let body = String(data: data, encoding: .utf8) { print("[AnalysisService] ◀︎ 确认响应: \(body)") }
         guard let http = res as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw AnalysisError.badResponse }
@@ -90,14 +134,13 @@ final class AnalysisService: @unchecked Sendable {
     /// 输入：cardId（操作卡片的唯一 ID）
     /// 请求体：{"session_id": ""}
     /// 响应：标准 HTTP 状态码，200-299 为成功
-    nonisolated func cancelAction(cardId: String) async throws {
+    nonisolated func cancelAction(cardId: String, cardType: String = "", cardSummary: String = "") async throws {
         guard !useMock else { return }
-        // 从 analyze 端点推导 actions 端点：/api/v1/analyze → /api/v1/actions/{id}/cancel
         let url = endpoint.deletingLastPathComponent().appendingPathComponent("actions").appendingPathComponent(cardId).appendingPathComponent("cancel")
         var r = URLRequest(url: url); r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": ""])
-        print("[AnalysisService] 取消操作卡片 → cardId: \(cardId), URL: \(url.absoluteString)")
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": "", "type": cardType, "summary": cardSummary])
+        print("[AnalysisService] 取消操作卡片 → cardId: \(cardId) type: \(cardType)")
         let (data, res) = try await self.session.data(for: r)
         if let body = String(data: data, encoding: .utf8) { print("[AnalysisService] ◀︎ 取消响应: \(body)") }
         guard let http = res as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw AnalysisError.badResponse }
@@ -185,6 +228,12 @@ final class AnalysisService: @unchecked Sendable {
     private nonisolated func emit(event: String?, data json: String, to c: AsyncThrowingStream<StreamEvent, Error>.Continuation) {
         // === 第一层：通用容器解码（主要路径） ===
         if let d = json.data(using: .utf8), let p = try? JSONDecoder().decode(StreamPayload.self, from: d) {
+            // meta 事件（data JSON 无 event 字段，需提前处理）
+            if let sid = p.sessionId {
+                print("[AnalysisService] ✅ 解析→meta | session_id=\(sid)")
+                c.yield(.state("__sid__\(sid)"))
+                return
+            }
             // 每个事件都可能携带 session_state
             if let state = p.sessionState {
                 c.yield(.state(state))

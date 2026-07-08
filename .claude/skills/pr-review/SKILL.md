@@ -9,17 +9,57 @@ description: >
 
 # PR Review
 
+## Architecture
+
+This skill uses a **hybrid architecture**:
+
+```
+User triggers /pr-review <PR_NUMBER>
+  ↓
+Step 1: Fetch PR metadata + count changed files
+  ↓
+Step 2: Dispatch based on PR size
+  ├─ Small PR (<10 files) → FAST PATH: Inline review in main context
+  └─ Medium/Large PR (≥10 files) → WORKFLOW PATH: Parallel sub-agent review
+```
+
+### Fast Path (Small PRs)
+
+For PRs with fewer than 10 changed files, review happens inline — the main model reads the reference checklists and examines the diff directly. This avoids sub-agent orchestration overhead for quick reviews.
+
+### Workflow Path (Medium/Large PRs)
+
+For PRs with 10 or more changed files, review is delegated to the `pr-review-workflow` which spawns 5 parallel agents (one per dimension), optionally verifies findings adversarially, and synthesizes a structured report. This provides:
+- **Parallel review**: 5 agents work simultaneously, reducing wall-clock time
+- **Focused context**: each agent only loads its dimension's checklist
+- **Deeper analysis**: dedicated context per dimension → more thorough findings
+- **Adversarial verification** (high effort): critical/high findings are independently verified to reduce false positives
+
 ## Workflow
 
-1. Fetch the PR diff via `gh pr diff <PR_NUMBER>` (or `gh pr view <PR_NUMBER> --json body,comments` for metadata).
-2. Read any files that are new or heavily modified to understand full context.
-3. Analyze the diff across five dimensions. Read the relevant reference file for each dimension before reviewing.
-4. Compile findings into the report template below.
-5. Post each finding as a separate PR review comment via `gh pr review <PR_NUMBER> --comment -F <file>`, or post the full report as a single comment via `gh pr comment <PR_NUMBER> -F <file>`.
+### Step 1: Fetch PR Info
 
-## Review Dimensions
+```bash
+gh pr view <PR_NUMBER> --json number,title,headRefName,baseRefName,files,body,commits
+```
 
-Review across these five dimensions, in priority order:
+Extract: `number`, `branch` (headRefName), `targetBranch` (baseRefName), file count (`files.length`), `headCommit` (last commit SHA: `commits[-1].oid`).
+
+### Step 2: Determine Path
+
+Count the number of changed files (`files.length` from the JSON above).
+
+- **<10 files**: Use **Fast Path** (steps 3-5 below)
+- **10-50 files**: Use **Workflow Path** with `effort: "medium"`
+- **>50 files**: Ask the user if they want a focused review on specific paths, or proceed with `effort: "high"` via Workflow
+
+### Step 3 (Fast Path): Inline Review
+
+For small PRs, review directly in the current context:
+
+1. Fetch the full diff: `gh pr diff <PR_NUMBER>`
+2. Read any files that are new or heavily modified to understand full context
+3. Read each reference checklist and examine the diff through that lens:
 
 | # | Dimension | Focus | Reference |
 |---|-----------|-------|-----------|
@@ -29,7 +69,39 @@ Review across these five dimensions, in priority order:
 | 4 | Performance | N+1 queries, blocking calls, memory leaks, inefficient patterns | `references/performance.md` |
 | 5 | Style | Naming, comments, code organization, project conventions | `references/style.md` |
 
-For each dimension, first read the reference file, then examine the diff through that lens.
+4. Compile findings into the report template (see below)
+5. Post findings (see Posting Strategy below)
+
+### Step 3 (Workflow Path): Delegate to Sub-Agents
+
+For medium/large PRs, invoke the parallel workflow:
+
+```
+Use the Workflow tool with:
+  name: "pr-review-workflow"
+  args: {
+    prNumber: <PR_NUMBER>,
+    branch: "<headRefName>",
+    targetBranch: "<baseRefName>",
+    effort: "medium"  // or "high" for >50 files with adversarial verification
+  }
+```
+
+The workflow returns:
+```json
+{
+  "report": "Full markdown report string",
+  "findings": [{ "severity": "...", "dimension": "...", "summary": "...", "file": "...", "why": "...", "fix": "..." }],
+  "summary": { "total": N, "bySeverity": {...}, "byDimension": {...} },
+  "prNumber": N,
+  "branch": "...",
+  "targetBranch": "...",
+  "effort": "..."
+}
+```
+
+4. Use the returned `report` as the PR comment body
+5. Post findings using the returned `findings` array (see Posting Strategy below)
 
 ## Severity Classification
 
@@ -108,12 +180,62 @@ Each individual finding must use this exact format:
 
 ## Posting Strategy
 
-1. Post findings with `🔴 critical` or `🟠 high` severity as **individual PR review comments** on the relevant line via `gh pr review {NUMBER} --comment -F -` with inline diff suggestions.
-2. Post the full report (all findings) as a **single PR comment** via `gh pr comment {NUMBER} --body-file <report.md>`.
-3. If there are zero critical + high findings, start the PR review with a ✅ approval.
+### Inline Line-Specific Comments (Critical & High findings)
+
+For each `🔴 critical` or `🟠 high` finding, post an **inline PR review comment** that appears directly on the code line in the diff view:
+
+```bash
+# Parse the file path and line number from the finding
+FILE_PATH="<finding.file without line number>"   # e.g. "server/app/api/analyze.py"
+LINE_NUM="<line number from finding.file>"        # e.g. "42"
+
+# Post inline review comment on the specific code line
+gh api "repos/$(gh repo view --json nameWithOwner -q .nameWithOwner)/pulls/<PR_NUMBER>/comments" \
+  -f body="### [{SEVERITY_LABEL}] {DIMENSION}: {ONE_LINE_SUMMARY}
+
+**Why**: {1-2 sentences explaining why this matters}
+**Fix**: {Specific fix suggestion}" \
+  -f commit_id="<HEAD_COMMIT_SHA>" \
+  -f path="$FILE_PATH" \
+  -f line="$LINE_NUM"
+```
+
+**Key requirement**: `commit_id` MUST be the PR head commit SHA (obtained in Step 1). The `line` parameter refers to the line number in the **changed file** (not the diff position).
+
+### Full Report Comment
+
+After posting all inline comments, post the full report as a **PR summary comment**:
+
+```bash
+# For fast path: save report to file, then post
+gh pr comment <PR_NUMBER> --body-file <report.md>
+
+# For workflow path: report is already in the workflow output
+gh pr comment <PR_NUMBER> --body "$REPORT_TEXT"
+```
+
+### Approval
+
+If there are zero critical + high findings, start the PR review with a ✅ approval:
+
+```bash
+gh pr review <PR_NUMBER> --approve -b "✅ PR Review passed — no critical or high severity findings."
+```
+
+### Summary of the Flow
+
+```
+For each critical/high finding:
+  → gh api .../pulls/{N}/comments (inline on code line, visible in diff view)
+
+After all inline comments:
+  → gh pr comment {N} --body "$REPORT" (full summary report)
+
+If zero critical+high:
+  → gh pr review {N} --approve (with explanation)
+```
 
 ## Before Starting
 
 - Verify `gh` CLI is authenticated and the repo is correct.
 - Confirm the PR number with the user if not explicitly provided.
-- If the diff is very large (>50 files), ask the user if they want a focused review on specific paths.

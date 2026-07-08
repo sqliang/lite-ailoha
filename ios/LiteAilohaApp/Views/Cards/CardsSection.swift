@@ -6,6 +6,7 @@ struct CardsSection: View {
     let cards: [ActionCard]
     let onConfirm: (ActionCard) -> Void
     let onCancel: (ActionCard) -> Void
+    var onAction: ((ActionCard, InsightAction) -> Void)? = nil
 
     var body: some View {
         if !cards.isEmpty {
@@ -16,7 +17,8 @@ struct CardsSection: View {
                         card: card,
                         typeLabel: CardIconHelper.label(for: card.type),
                         onConfirm: { onConfirm(card) },
-                        onCancel: { onCancel(card) }
+                        onCancel: { onCancel(card) },
+                        onAction: { action in onAction?(card, action) }
                     )
                 }
             }

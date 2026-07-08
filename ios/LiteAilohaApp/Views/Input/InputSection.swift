@@ -7,6 +7,7 @@ struct InputSection: View {
     @Binding var imageData: Data?
     @Binding var supplementText: String
     let isAnalyzing: Bool
+    let sessionState: String?
     let onAnalyze: () -> Void
     let onCancel: () -> Void
 
@@ -63,20 +64,30 @@ struct InputSection: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
             .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItem, matching: .images)
 
-            // 分析 / 停止按钮
+            // 分析 / 停止 / 洞察中按钮
             if isAnalyzing {
                 Button(action: onCancel) {
                     HStack(spacing: 8) {
                         Image(systemName: "stop.fill")
-                        Text("停止分析")
+                        Text("Agent 分析中…")
                             .font(.headline)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color.red)
-                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+                    .background(Color.red).foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                 }
+            } else if sessionState == "GENERATING" {
+                Button(action: {}) {
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.8).tint(.white)
+                        Text("正在生成洞察…")
+                            .font(.headline)
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+                    .background(Color.orange).foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+                .disabled(true)
             } else {
                 Button(action: onAnalyze) {
                     HStack(spacing: 8) {
@@ -84,8 +95,7 @@ struct InputSection: View {
                         Text("开始分析")
                             .font(.headline)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
+                    .frame(maxWidth: .infinity).padding(.vertical, 14)
                     .background(canAnalyze ? Color.accentColor : Color(.systemGray4))
                     .foregroundStyle(canAnalyze ? .white : .secondary)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
