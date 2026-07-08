@@ -127,22 +127,17 @@ struct DeviceDataProvider {
 
         let f = card.fields
         let reminder = EKReminder(eventStore: store)
-        reminder.title  = f["title"]   ?? ""
+        // title: fields 优先，空则 fallback 到 summary
+        let titleText = f["title"]?.isEmpty == false ? f["title"]! : card.summary
+        reminder.title = titleText
         reminder.notes  = f["content"] ?? ""
         if let due = f["due_date"], !due.isEmpty {
             reminder.dueDateComponents = parseNaturalDueDate(due)
         }
         print("[DeviceData] createReminder | title=\(reminder.title) notes=\(reminder.notes ?? "nil") due=\(f["due_date"] ?? "nil")")
-        // defaultCalendarForNewReminders 在模拟器/未设置时可能为 nil，fallback 到第一个可用提醒日历
-        if let defaultCal = store.defaultCalendarForNewReminders() {
-            reminder.calendar = defaultCal
-        } else if let firstCal = store.calendars(for: .reminder).first {
-            print("[DeviceData] ⚠️ defaultCalendarForNewReminders 为 nil，fallback 到: \(firstCal.title)")
-            reminder.calendar = firstCal
-        } else {
-            print("[DeviceData] ❌ 没有可用的提醒日历，请在系统设置中添加提醒列表")
-            return false
-        }
+
+        guard let cal = getOrCreateReminderCalendar(store) else { return false }
+        reminder.calendar = cal
         do { try store.save(reminder, commit: true); print("[DeviceData] ✅ 提醒已创建"); return true }
         catch { print("[DeviceData] ❌ 创建提醒失败: \(error)"); return false }
     }
@@ -157,7 +152,9 @@ struct DeviceDataProvider {
 
         let f = card.fields
         let event = EKEvent(eventStore: store)
-        event.title = f["title"] ?? ""
+        // title: fields 优先，空则 fallback 到 summary
+        let titleText = f["title"]?.isEmpty == false ? f["title"]! : card.summary
+        event.title = titleText
 
         if let dt = f["datetime"], !dt.isEmpty {
             let parsed = parseNaturalDateTime(dt)
@@ -205,7 +202,9 @@ struct DeviceDataProvider {
 
         let f = card.fields
         let contact = CNMutableContact()
-        contact.givenName       = f["name"]     ?? ""
+        // name: fields 优先，空则 fallback 到 summary
+        let nameText = f["name"]?.isEmpty == false ? f["name"]! : card.summary
+        contact.givenName       = nameText
         contact.jobTitle        = f["title"]    ?? ""
         contact.organizationName = f["company"] ?? ""
         contact.note            = f["notes"]    ?? ""
@@ -294,5 +293,23 @@ struct DeviceDataProvider {
         }
         // fallback: comma-separated
         return raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// 获取或创建提醒日历：默认 → 已有 → 程序化创建一个本地列表
+    private func getOrCreateReminderCalendar(_ store: EKEventStore) -> EKCalendar? {
+        if let cal = store.defaultCalendarForNewReminders() { return cal }
+        if let cal = store.calendars(for: .reminder).first { return cal }
+        let cal = EKCalendar(for: .reminder, eventStore: store)
+        cal.title = "Lite Ailoha"
+        cal.source = store.sources.first(where: { $0.sourceType == .local })
+                  ?? store.sources.first
+        do {
+            try store.saveCalendar(cal, commit: true)
+            print("[DeviceData] 📅 自动创建提醒列表: \(cal.title)")
+            return cal
+        } catch {
+            print("[DeviceData] ❌ 创建提醒列表失败: \(error)")
+            return nil
+        }
     }
 }
