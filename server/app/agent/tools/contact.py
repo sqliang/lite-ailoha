@@ -85,14 +85,7 @@ def query_contacts(name: str = "") -> str:
     Returns:
         JSON 数组格式的匹配联系人列表
     """
-    # MVP: mock 数据，后续接入真实数据库
-    mock_contacts = [
-        {"name": "张三", "phone": "13800001111", "email": "zhangsan@example.com", "company": "ABC科技", "title": "工程师"},
-        {"name": "李四", "phone": "13900002222", "email": "lisi@example.com", "company": "XYZ集团", "title": "产品经理"},
-        {"name": "王五", "phone": "13700003333", "email": "wangwu@example.com", "company": "DEF公司", "title": "设计师"},
-    ]
-    if name:
-        filtered = [c for c in mock_contacts if name in c["name"]]
-    else:
-        filtered = mock_contacts
+    # 暂无持久化联系人数据，返回空列表
+    # 后续接入 contacts 表或 iOS 通讯录
+    filtered = []
     return json.dumps(filtered, ensure_ascii=False)
