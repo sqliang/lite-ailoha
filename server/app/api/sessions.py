@@ -151,6 +151,7 @@ async def generate_insight(session_id: str, request: Request):
             async for event in _get_insight_agent().astream_events(
                 {"messages": [{"role": "user", "content": "请调用 generate_insight 工具，分析用户确认的操作卡片。"}]},
                 version="v2",
+                config={"configurable": {"insight_card_id": card_id}},
             ):
                 if event.get("event") == "on_tool_end" and event.get("name") == "generate_insight":
                     event_id += 1
@@ -186,73 +187,3 @@ async def generate_insight(session_id: str, request: Request):
             yield {"event": "error", "id": str(event_id), "data": err.model_dump_json()}
 
     return EventSourceResponse(event_stream())
-
-
-def _build_insight_message(
-    structured: str | None,
-    confirmed: list[dict],
-    cancelled: list[dict],
-    contacts: list[dict] | None = None,
-    calendar: list[dict] | None = None,
-    device_contacts: list[dict] | None = None,
-    device_events: list[dict] | None = None,
-    device_reminders: list[dict] | None = None,
-) -> str:
-    """构造阶段二的 Coordinator 消息，整合服务端 + 设备端数据。"""
-    msg = """## 任务：基于用户决策生成洞察建议
-
-针对用户当前确认的这张卡片，分析其可行性和潜在冲突。
-
-"""
-    if structured:
-        msg += f"### 原始对话上下文\n```json\n{structured}\n```\n\n"
-
-    msg += "### 用户确认的卡片\n"
-    if confirmed:
-        for c in confirmed:
-            msg += f"- [{c['type']}] {c['summary']}\n"
-    else:
-        msg += "- (无)\n"
-
-    msg += "\n### 用户取消的卡片\n"
-    if cancelled:
-        for c in cancelled:
-            msg += f"- [{c['type']}] {c['summary']}\n"
-    else:
-        msg += "- (无)\n"
-
-    if contacts:
-        msg += f"\n### 已有联系人（服务端，共 {len(contacts)} 人）\n"
-        for ct in contacts[:20]:
-            msg += f"- {ct.get('name','?')} | {ct.get('title','')} | {ct.get('company','')} | 电话:{ct.get('phone','')} | 邮箱:{ct.get('email','')} | 会面:{ct.get('meeting_count',0)}次\n"
-
-    if device_contacts:
-        msg += f"\n### 设备端联系人（iOS 通讯录，共 {len(device_contacts)} 人）\n"
-        for dc in device_contacts[:20]:
-            msg += f"- {dc.get('name','?')} | {dc.get('title','')} | {dc.get('company','')} | 电话:{dc.get('phones',[])} | 邮箱:{dc.get('emails',[])}\n"
-
-    if calendar or device_events:
-        msg += "\n### 已有日历事件\n"
-        for ev in (calendar or []):
-            msg += f"- {ev.get('datetime','')} | {ev.get('title','')} | 参与人: {ev.get('participants',[])}\n"
-        for ev in (device_events or []):
-            msg += f"- {ev.get('start','')}~{ev.get('end','')} | {ev.get('title','')} | 地点:{ev.get('location','')}\n"
-
-    if device_reminders:
-        msg += f"\n### 设备端提醒（共 {len(device_reminders)} 条）\n"
-        for dr in device_reminders[:20]:
-            msg += f"- {dr.get('title','')} | 截止:{dr.get('dueDate','')} | 优先级:{dr.get('priority',0)}\n"
-
-    msg += """
-请调用 generate_insight 工具。输出 JSON 包含：
-- action: "generate_insight"
-- card_id: 卡片 ID
-- verdict: approved | approved_with_note | conflict | unnecessary
-- conflicts: [冲突描述...]
-- suggestion: 调整建议
-- adjusted_action: 调整后的动作（仅 verdict=conflict 时）
-- next_steps: [后续步骤...]
-
-输出中文。
-"""
-    return msg

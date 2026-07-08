@@ -72,7 +72,14 @@ final class AnalysisService: @unchecked Sendable {
     /// 阶段二：请求洞察建议
     nonisolated func requestInsight(sessionId: String, cardId: String, cardType: String, cardSummary: String,
                                      deviceContacts: [[String: Any]], deviceEvents: [[String: Any]], deviceReminders: [[String: Any]]) -> AsyncThrowingStream<StreamEvent, Error> {
-        AsyncThrowingStream { continuation in
+        guard !useMock else {
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.insight("{\"card_id\":\"mock\",\"verdict\":\"approved\",\"title\":\"Mock 洞察\",\"analysis\":\"无\",\"recommendation\":\"无\",\"actions\":[]}"))
+                continuation.yield(.done)
+                continuation.finish()
+            }
+        }
+        return AsyncThrowingStream { continuation in
             let task = Task.detached {
                 do {
                     let url = self.endpoint.deletingLastPathComponent().appendingPathComponent("sessions").appendingPathComponent(sessionId).appendingPathComponent("insight")

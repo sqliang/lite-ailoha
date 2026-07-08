@@ -111,7 +111,7 @@ final class AnalysisViewModel: ObservableObject {
         // 取消旧任务
         currentTask?.cancel()
         // 重置所有分析状态，确保新分析不受旧数据影响
-        cards = []; insight = ""; structure = nil; sessionState = nil; sessionId = nil; isAnalyzing = true
+        cards = []; insight = ""; structure = nil; sessionState = nil; sessionId = nil; insightRequestedCards = []; isAnalyzing = true
         currentTask = Task {
             do {
                 // 逐事件消费 SSE 流，每个事件驱动一次 UI 更新
@@ -128,7 +128,10 @@ final class AnalysisViewModel: ObservableObject {
                     }
                 }
                 isAnalyzing = false
-            } catch { isAnalyzing = false; showToast("分析失败：\(error.localizedDescription)", success: false) }
+            } catch {
+                guard !Task.isCancelled else { return }
+                isAnalyzing = false; showToast("分析失败：\(error.localizedDescription)", success: false)
+            }
         }
     }
 
@@ -183,7 +186,7 @@ final class AnalysisViewModel: ObservableObject {
     func confirm(_ card: ActionCard) {
         updateStatus(card, to: .confirmed); save(card)
         Task { try? await service.confirmAction(cardId: card.id, cardType: card.type, cardSummary: card.summary) }
-        showToast("已确认：\(typeLabel(card.type))", success: true)
+        showToast("已确认：\(CardIconHelper.label(for: card.type))", success: true)
         requestInsightIfNeeded(for: card)
     }
 
@@ -244,7 +247,7 @@ final class AnalysisViewModel: ObservableObject {
     func cancel(_ card: ActionCard) {
         updateStatus(card, to: .cancelled)
         Task { try? await service.cancelAction(cardId: card.id, cardType: card.type, cardSummary: card.summary) }
-        showToast("已取消：\(typeLabel(card.type))", success: false)
+        showToast("已取消：\(CardIconHelper.label(for: card.type))", success: false)
     }
 
     // MARK: - 私有辅助方法
@@ -258,7 +261,9 @@ final class AnalysisViewModel: ObservableObject {
     ///   - card: 目标卡片（仅用于 id 匹配）
     ///   - status: 新状态
     private func updateStatus(_ card: ActionCard, to status: CardStatus) {
-        guard let idx = cards.firstIndex(where: { $0.id == card.id }) else { return }
+        guard let idx = cards.firstIndex(where: { $0.id == card.id }) else {
+            print("[VM] updateStatus 警告: 未找到卡片 id=\(card.id)"); return
+        }
         cards[idx].status = status
     }
 
@@ -298,28 +303,4 @@ final class AnalysisViewModel: ObservableObject {
         }
     }
 
-    // MARK: - 类型映射
-
-    /// 将卡片类型字符串映射为中文显示标签。
-    ///
-    /// 映射表（与服务器端 `schemas/response.py` 中的 4 种 canonical 类型保持一致）：
-    /// | 类型字符串 | 中文标签 |
-    /// |-----------|---------|
-    /// | `create_meeting` | 创建会议 |
-    /// | `create_contact` | 创建联系人 |
-    /// | `update_contact` | 更新联系人 |
-    /// | `create_reminder` | 创建提醒 |
-    /// | 其他 | 动作 |
-    ///
-    /// - Parameter type: 卡片类型标识符
-    /// - Returns: 对应的中文显示文案
-    func typeLabel(_ type: String) -> String {
-        switch type {
-        case "create_meeting": return "创建会议"
-        case "create_contact": return "创建联系人"
-        case "update_contact": return "更新联系人"
-        case "create_reminder": return "创建提醒"
-        default: return "动作"
-        }
-    }
 }
