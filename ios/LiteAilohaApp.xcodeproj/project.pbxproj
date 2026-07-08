@@ -398,8 +398,11 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "用于检查会议时间冲突";
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要使用相机拍摄截图";
+				INFOPLIST_KEY_NSContactsUsageDescription = "用于核对联系人是否已存在";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "需要访问相册选择截图";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "用于检查提醒是否重复";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -432,8 +435,11 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "用于检查会议时间冲突";
 				INFOPLIST_KEY_NSCameraUsageDescription = "需要使用相机拍摄截图";
+				INFOPLIST_KEY_NSContactsUsageDescription = "用于核对联系人是否已存在";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "需要访问相册选择截图";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "用于检查提醒是否重复";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

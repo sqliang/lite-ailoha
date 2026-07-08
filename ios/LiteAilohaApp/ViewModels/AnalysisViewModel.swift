@@ -65,7 +65,8 @@ final class AnalysisViewModel: ObservableObject {
     /// 由 SSE 事件的 session_state 字段更新，驱动 StatusSection 展示。
     @Published var sessionState: String?
 
-    // currentStep / statusMessage 已删除 — 步骤进度统一由 sessionState 驱动。
+    /// 服务端会话 ID，用于阶段二请求洞察
+    var sessionId: String?
 
     /// Toast 浮动提示消息文本。
     /// 非 nil 时显示 Toast，nil 时隐藏。
@@ -110,7 +111,7 @@ final class AnalysisViewModel: ObservableObject {
         // 取消旧任务
         currentTask?.cancel()
         // 重置所有分析状态，确保新分析不受旧数据影响
-        cards = []; insight = ""; structure = nil; sessionState = nil; isAnalyzing = true
+        cards = []; insight = ""; structure = nil; sessionState = nil; sessionId = nil; isAnalyzing = true
         currentTask = Task {
             do {
                 // 逐事件消费 SSE 流，每个事件驱动一次 UI 更新
@@ -121,7 +122,9 @@ final class AnalysisViewModel: ObservableObject {
                     case .insight(let text): insight = text
                     case .error(let p): showToast(p.message, success: false)
                     case .done: break
-                    case .state(let s): sessionState = s   // 流正常结束，isAnalyzing 在循环外置 false
+                    case .state(let s):
+                        if s.hasPrefix("__sid__") { sessionId = String(s.dropFirst(7)) }
+                        else { sessionState = s }
                     }
                 }
                 isAnalyzing = false
@@ -147,10 +150,86 @@ final class AnalysisViewModel: ObservableObject {
     /// 4. 显示成功 Toast
     ///
     /// - Parameter card: 被确认的动作卡片
+    /// 已请求过洞察的卡片 ID 集合（防重复）。
+    private var insightRequestedCards: Set<String> = []
+
+    /// 处理洞察操作按钮
+    func handleAction(_ card: ActionCard, _ action: InsightAction) {
+        print("[VM] handleAction card=\(card.id) action=\(action.label) type=\(action.type)")
+        switch action.type {
+        case "execute":
+            Task {
+                let success = await DeviceDataProvider().executeAction(card: card)
+                if success {
+                    try? await service.executeAction(cardId: card.id)
+                    // 执行成功 → 关闭洞察，卡片恢复正常
+                    if let idx = cards.firstIndex(where: { $0.id == card.id }) {
+                        cards[idx].insight = nil
+                    }
+                }
+                await MainActor.run {
+                    showToast(success ? "已执行: \(action.label)" : "执行失败，请检查权限", success: success)
+                }
+            }
+        case "dismiss":
+            if let idx = cards.firstIndex(where: { $0.id == card.id }) {
+                cards[idx].insight = nil
+            }
+            print("[VM] 洞察已关闭 card=\(card.id)")
+        default: break
+        }
+    }
+
     func confirm(_ card: ActionCard) {
         updateStatus(card, to: .confirmed); save(card)
-        Task { try? await service.confirmAction(cardId: card.id) }
+        Task { try? await service.confirmAction(cardId: card.id, cardType: card.type, cardSummary: card.summary) }
         showToast("已确认：\(typeLabel(card.type))", success: true)
+        requestInsightIfNeeded(for: card)
+    }
+
+    private func requestInsightIfNeeded(for card: ActionCard) {
+        print("[VM] requestInsight triggered: cardId=\(card.id) sessionId=\(sessionId ?? "nil") alreadyRequested=\(insightRequestedCards.contains(card.id))")
+        guard !insightRequestedCards.contains(card.id), let sid = sessionId else { return }
+        print("[VM] 开始采集设备数据并请求洞察...")
+        insightRequestedCards.insert(card.id)
+        sessionState = "GENERATING"
+
+        Task {
+            let provider = DeviceDataProvider()
+            async let contacts = provider.fetchContacts()
+            async let events = provider.fetchEvents()
+            async let reminders = provider.fetchReminders()
+            let (dc, de, dr) = await (contacts, events, reminders)
+
+            do {
+                for try await event in service.requestInsight(
+                    sessionId: sid, cardId: card.id, cardType: card.type, cardSummary: card.summary,
+                    deviceContacts: dc, deviceEvents: de, deviceReminders: dr
+                ) {
+                    switch event {
+                    case .insight(let text):
+                        if let idx = cards.firstIndex(where: { $0.id == card.id }) {
+                            if let data = text.data(using: .utf8),
+                               let ci = try? JSONDecoder().decode(CardInsight.self, from: data) {
+                                cards[idx].insight = ci
+                            } else {
+                                print("[VM] CardInsight 解码失败，fallback 展示原文 raw=\(text.prefix(100))")
+                                cards[idx].insight = CardInsight(
+                                    cardId: card.id, verdict: "approved_with_note",
+                                    title: "洞察生成完成", analysis: "无法解析", recommendation: text, actions: []
+                                )
+                            }
+                        }
+                    case .done: sessionState = "COMPLETED"
+                    case .error(let p): sessionState = "INSIGHT_FAILED"; showToast("洞察失败: \(p.message)", success: false)
+                    default: break
+                    }
+                }
+            } catch {
+                sessionState = "INSIGHT_FAILED"
+                showToast("洞察请求失败", success: false)
+            }
+        }
     }
 
     /// 取消一张动作卡片。
@@ -164,7 +243,7 @@ final class AnalysisViewModel: ObservableObject {
     /// - Parameter card: 被取消的动作卡片
     func cancel(_ card: ActionCard) {
         updateStatus(card, to: .cancelled)
-        Task { try? await service.cancelAction(cardId: card.id) }
+        Task { try? await service.cancelAction(cardId: card.id, cardType: card.type, cardSummary: card.summary) }
         showToast("已取消：\(typeLabel(card.type))", success: false)
     }
 

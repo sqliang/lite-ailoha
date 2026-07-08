@@ -26,16 +26,25 @@ struct ActionCardView: View {
     let onConfirm: () -> Void
     /// 用户点击"取消"按钮的回调
     let onCancel: () -> Void
+    /// 洞察操作按钮回调
+    var onAction: ((InsightAction) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // --- 卡片头部：类型图标 + 中文标签 + 状态徽章 ---
+            // --- 卡片头部：类型图标 + 中文标签 + 状态 ---
             HStack {
                 Label(typeLabel, systemImage: icon)
                     .font(.subheadline.bold())
                     .foregroundColor(.accentColor)
                 Spacer()
-                statusBadge
+                if card.status == .confirmed && card.insight == nil {
+                    HStack(spacing: 4) {
+                        ProgressView().scaleEffect(0.7)
+                        Text("分析中…").font(.caption2).foregroundStyle(.blue)
+                    }
+                } else {
+                    statusBadge
+                }
             }
 
             // --- 卡片正文：动作摘要描述 ---
@@ -46,20 +55,52 @@ struct ActionCardView: View {
             // --- 操作按钮区：仅在待确认状态显示确认/取消按钮 ---
             if card.status == .pending {
                 HStack(spacing: 12) {
-                    // 取消按钮
                     Button(action: onCancel) {
                         Text("取消")
                             .frame(maxWidth: .infinity).padding(.vertical, 10)
                             .background(Color(.tertiarySystemBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
-                    // 确认按钮（主题色高亮）
                     Button(action: onConfirm) {
                         Text("确认")
                             .frame(maxWidth: .infinity).padding(.vertical, 10)
                             .background(Color.accentColor)
                             .foregroundStyle(.white)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+            }
+
+            // --- 洞察区域（卡片内部，同一背景色）---
+            if let insight = card.insight {
+                Divider()
+                HStack(spacing: 6) {
+                    Image(systemName: insight.verdict == "conflict" ? "exclamationmark.triangle.fill" : "lightbulb.fill")
+                        .font(.caption)
+                        .foregroundStyle(insight.verdict == "conflict" ? .orange : .green)
+                    Text(insight.title)
+                        .font(.subheadline.weight(.medium))
+                }
+                if !insight.analysis.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("📊 分析").font(.caption.weight(.medium))
+                        Text(insight.analysis).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if !insight.recommendation.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("💡 建议").font(.caption.weight(.medium))
+                        Text(insight.recommendation).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if !insight.actions.isEmpty {
+                    HStack(spacing: 10) {
+                        ForEach(insight.actions, id: \.label) { action in
+                            Button(action.label) { onAction?(action) }
+                                .buttonStyle(.borderedProminent)
+                                .tint(action.type == "execute" ? .accentColor : .secondary)
+                                .controlSize(.small)
+                        }
                     }
                 }
             }
@@ -84,8 +125,7 @@ struct ActionCardView: View {
             // 待确认状态不显示徽章
             EmptyView()
         case .confirmed:
-            Label("已确认", systemImage: "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(.green)
+            EmptyView()
         case .cancelled:
             Label("已取消", systemImage: "xmark.circle.fill")
                 .font(.caption).foregroundStyle(.red)

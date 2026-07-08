@@ -201,6 +201,10 @@ async def analyze(request: AnalyzeRequest):
         try:
             logger.info("[4/7] 开始SSE流式分析 | session_id=%s", session_id)
 
+            # 第一个事件：session_id，让 iOS 知道后续要关联的会话
+            yield {"event": "meta", "id": "0",
+                   "data": json.dumps({"session_id": session_id})}
+
             # 显式推送第一步 status（不依赖 LangGraph 事件）
             yield {"event": "status", "id": str(1),
                    "data": json.dumps({"step": "structuring", "message": "正在理解聊天内容…"}, ensure_ascii=False)}
