@@ -33,6 +33,7 @@ class ActionCard(BaseModel):
     id: str = Field(description="服务端生成的 UUID")
     type: str = Field(description="动作类型: create_meeting | create_contact | update_contact | create_reminder")
     summary: str = Field(description="中文摘要，如'为张三创建会议「产品评审」，时间 周四 15:00'")
+    fields: dict = Field(default_factory=dict, description="结构化字段，透传 tool 返回的完整 JSON")
 
 # -- SSE 事件负载 ------------------------------------------------------------
 

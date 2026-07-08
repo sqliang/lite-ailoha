@@ -2,6 +2,7 @@
 POST /api/v1/actions/{action_id}/confirm|cancel — 用户确认/取消动作卡片。
 """
 import logging
+import json
 from fastapi import APIRouter, HTTPException
 from app.schemas.request import ActionRequest
 from app.schemas.response import ActionResponse
@@ -26,8 +27,8 @@ async def confirm_action(action_id: str, body: ActionRequest):
     try:
         db = await get_db()
         await db.execute(
-            "INSERT OR REPLACE INTO confirmed_actions (id, type, summary, status) VALUES (?, ?, ?, 'confirmed')",
-            (action_id, body.type or "", body.summary or ""),
+            "INSERT OR REPLACE INTO confirmed_actions (id, type, summary, fields, status) VALUES (?, ?, ?, ?, 'confirmed')",
+            (action_id, body.type or "", body.summary or "", json.dumps(body.fields, ensure_ascii=False)),
         )
         await db.commit()
     except Exception:
@@ -48,8 +49,8 @@ async def cancel_action(action_id: str, body: ActionRequest):
     try:
         db = await get_db()
         await db.execute(
-            "INSERT OR REPLACE INTO confirmed_actions (id, type, summary, status) VALUES (?, ?, ?, 'cancelled')",
-            (action_id, body.type or "", body.summary or ""),
+            "INSERT OR REPLACE INTO confirmed_actions (id, type, summary, fields, status) VALUES (?, ?, ?, ?, 'cancelled')",
+            (action_id, body.type or "", body.summary or "", json.dumps(body.fields, ensure_ascii=False)),
         )
         await db.commit()
     except Exception:

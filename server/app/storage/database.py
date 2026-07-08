@@ -120,6 +120,15 @@ async def _init_schema(db: aiosqlite.Connection):
     except Exception:
         pass  # 列已存在，忽略
 
+    # 兼容旧数据库：confirmed_actions 新增 fields 列
+    try:
+        await db.execute(
+            "ALTER TABLE confirmed_actions ADD COLUMN fields TEXT DEFAULT '{}'"
+        )
+        await db.commit()
+    except Exception:
+        pass  # 列已存在，忽略
+
 
 async def close_db():
     """关闭数据库连接（应用关闭时调用）。"""

@@ -72,16 +72,17 @@
         │
         ▼
 [Server] api/analyze.py
-  ├── [1/7] 接收请求 + 输入验证
-  ├── [2/7] 生成 session_id
+  ├── [1/7] 提取请求参数 (image b64 + user_context)
+  ├── [2/7] 输入验证 (至少一个非空)
+  ├── [3/7] 生成 session_id，写入 analyze_sessions (PENDING)
   └── LiteAilohaAgent.stream_analyze()
         │
         ▼
 [Server] agent/deep_agent.py
-  ├── [3/8] 初始化 VISION_MODEL + LLM_MODEL (llm_factory.py)
-  ├── [4/8] 组装 DeepAgent (Coordinator + 3 Subagents)
-  ├── [5/8] 构建多模态提示词 (文本指令 + base64 图片)
-  ├── [6/8] 设置共享图片，启动 astream_events 循环
+  ├── [1/4] 初始化 Agent（首次请求时懒加载）
+  ├── [2/4] 组装 DeepAgent (Coordinator + 3 Subagents + tools)
+  ├── [3/4] 构建 Coordinator 消息 (文本指令)
+  ├── [4/4] 设置共享图片，启动 astream_events 循环
   │     │
   │     ├── Coordinator 调用 structure_conversation
   │     │     └── VISION_MODEL 看图 → {participants, messages}
@@ -96,11 +97,13 @@
   │     └── Coordinator 调用 generate_insight
   │           └── → SSE event:insight
   │
-  └── [8/8] 完成 → SSE event:done
+  └── 完成 → SSE event:done
         │
         ▼
 [Server] api/analyze.py
-  └── 写入 analyze_sessions 表 (session_id, structured_conversation, cards, insight)
+  ├── [5/7] SSE 事件分发表 (struct → card → insight → done)
+  ├── [6/7] 持久化到 analyze_sessions 表
+  └── [7/7] 异常捕获 → error 事件
         │
         ▼
 [iOS] AnalysisViewModel 消费 AsyncThrowingStream
@@ -163,7 +166,7 @@ event:struct
 data: {"event":"struct","participants":["张三","李四"],"messages":[...]}
 
 event:card
-data: {"event":"card","card":{"id":"create_meeting-abc123","type":"create_meeting","summary":"..."}}
+data: {"event":"card","card":{"id":"create_meeting-abc123","type":"create_meeting","summary":"...","fields":{"title":"产品评审","participants":"[\"张三\"]","datetime":"周四 15:00"}}}
 
 event:insight
 data: {"event":"insight","insight":"张三已有2个待定会议..."}
@@ -182,8 +185,8 @@ iOS 客户端 `AnalysisService.emit()` 使用两层策略解析 SSE 数据行：
 ### POST /api/v1/actions/{id}/confirm | cancel
 
 ```json
-// Request: {"session_id": ""}
-// Response: 200 OK
+// Request: {"session_id": "", "type": "create_meeting", "summary": "...", "fields": {...}}
+// Response: 200 OK {"action_id": "...", "status": "confirmed"}
 ```
 
 ### GET /api/v1/sessions/{id}

@@ -125,12 +125,12 @@ final class AnalysisService: @unchecked Sendable {
     /// 输入：cardId（操作卡片的唯一 ID）
     /// 请求体：{"session_id": ""}
     /// 响应：标准 HTTP 状态码，200-299 为成功
-    nonisolated func confirmAction(cardId: String, cardType: String = "", cardSummary: String = "") async throws {
+    nonisolated func confirmAction(cardId: String, cardType: String = "", cardSummary: String = "", cardFields: [String: String] = [:]) async throws {
         guard !useMock else { return }
         let url = endpoint.deletingLastPathComponent().appendingPathComponent("actions").appendingPathComponent(cardId).appendingPathComponent("confirm")
         var r = URLRequest(url: url); r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": "", "type": cardType, "summary": cardSummary])
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": "", "type": cardType, "summary": cardSummary, "fields": cardFields])
         print("[AnalysisService] 确认操作卡片 → cardId: \(cardId) type: \(cardType)")
         let (data, res) = try await self.session.data(for: r)
         if let body = String(data: data, encoding: .utf8) { print("[AnalysisService] ◀︎ 确认响应: \(body)") }
@@ -141,12 +141,12 @@ final class AnalysisService: @unchecked Sendable {
     /// 输入：cardId（操作卡片的唯一 ID）
     /// 请求体：{"session_id": ""}
     /// 响应：标准 HTTP 状态码，200-299 为成功
-    nonisolated func cancelAction(cardId: String, cardType: String = "", cardSummary: String = "") async throws {
+    nonisolated func cancelAction(cardId: String, cardType: String = "", cardSummary: String = "", cardFields: [String: String] = [:]) async throws {
         guard !useMock else { return }
         let url = endpoint.deletingLastPathComponent().appendingPathComponent("actions").appendingPathComponent(cardId).appendingPathComponent("cancel")
         var r = URLRequest(url: url); r.httpMethod = "POST"
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": "", "type": cardType, "summary": cardSummary])
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["session_id": "", "type": cardType, "summary": cardSummary, "fields": cardFields])
         print("[AnalysisService] 取消操作卡片 → cardId: \(cardId) type: \(cardType)")
         let (data, res) = try await self.session.data(for: r)
         if let body = String(data: data, encoding: .utf8) { print("[AnalysisService] ◀︎ 取消响应: \(body)") }
@@ -252,7 +252,7 @@ final class AnalysisService: @unchecked Sendable {
                     c.yield(.structure(StructPayload(event: "struct", participants: pp, messages: mm))); return
                 }
             case "card": if let card = p.card {
-                print("[AnalysisService] ✅ 解析→card | type=\(card.type), summary=\(card.summary.prefix(60))")
+                print("[AnalysisService] ✅ 解析→card | type=\(card.type), summary=\(card.summary.prefix(60)), fields=\(card.fields)")
                 c.yield(.card(card)); return
             }
             case "insight": if let ins = p.insight {
@@ -277,7 +277,7 @@ final class AnalysisService: @unchecked Sendable {
             c.yield(.structure(sp))
         }
         case "card": if let card = try? JSONDecoder().decode(ActionCard.self, from: d) {
-            print("[AnalysisService] ✅ fallback→card | type=\(card.type)")
+            print("[AnalysisService] ✅ fallback→card | type=\(card.type), fields=\(card.fields)")
             c.yield(.card(card))
         }
         case "insight": if let p = try? JSONDecoder().decode(StreamPayload.self, from: d), let ins = p.insight {
@@ -322,10 +322,10 @@ final class AnalysisService: @unchecked Sendable {
         AsyncThrowingStream { continuation in
             let task = Task.detached {
                 let cards = [
-                    ActionCard(id: UUID().uuidString, type: "create_meeting", summary: "为张三创建会议「产品评审」，时间 周四 15:00"),
-                    ActionCard(id: UUID().uuidString, type: "create_contact", summary: "添加联系人：张三（产品经理，138xxxx）"),
-                    ActionCard(id: UUID().uuidString, type: "update_contact", summary: "更新联系人「李四」的部门为「产品部」"),
-                    ActionCard(id: UUID().uuidString, type: "create_reminder", summary: "会前 30 分钟提醒准备演示文稿"),
+                    ActionCard(id: UUID().uuidString, type: "create_meeting", summary: "为张三创建会议「产品评审」，时间 周四 15:00", fields: [:]),
+                    ActionCard(id: UUID().uuidString, type: "create_contact", summary: "添加联系人：张三（产品经理，138xxxx）", fields: [:]),
+                    ActionCard(id: UUID().uuidString, type: "update_contact", summary: "更新联系人「李四」的部门为「产品部」", fields: [:]),
+                    ActionCard(id: UUID().uuidString, type: "create_reminder", summary: "会前 30 分钟提醒准备演示文稿", fields: [:]),
                 ]
                 do {
                     // 构造模拟的结构化对话数据

@@ -361,6 +361,7 @@ def _tool_output_to_card_event(tool_name: str, output) -> dict | None:
             "id": f"{card_type}-{hash(summary) & 0x7FFFFFFF:08x}",
             "type": card_type,
             "summary": summary,
+            "fields": _clean_fields(card_type, result),
         },
     }
 
@@ -395,6 +396,33 @@ def _tool_output_to_insight_event(output) -> dict | None:
         insight_text = str(result)
 
     return {"type": "insight", "data": insight_text} if insight_text else None
+
+
+# =============================================================================
+# Fields 清理 — 去掉内部字段，数组值序列化为 JSON 字符串
+# =============================================================================
+
+_STRIP_KEYS = {"action", "status"}
+
+
+def _clean_fields(card_type: str, result: dict) -> dict:
+    """清理 fields：去掉 action/status 等内部字段，数组值 json.dumps 为字符串。
+
+    为什么需要数组序列化:
+      Tool 返回的 participants 是 list（如 ["张三","李四"]），
+      但 iOS 端 ActionCard.fields 用 [String: String] 统一解码。
+      服务端预先 json.dumps 可避免 Swift 端处理异构类型。
+    """
+    import json as _json
+    cleaned = {}
+    for k, v in result.items():
+        if k in _STRIP_KEYS:
+            continue
+        if isinstance(v, list):
+            cleaned[k] = _json.dumps(v, ensure_ascii=False)
+        else:
+            cleaned[k] = v
+    return cleaned
 
 
 def _build_summary(card_type: str, args: dict) -> str:
