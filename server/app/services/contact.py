@@ -11,8 +11,7 @@ class ContactService:
 
     def __init__(self):
         self._contacts: list[dict] = [
-            {"name": "张三", "phone": "13800001111", "email": "zhangsan@example.com", "company": "ABC科技"},
-            {"name": "李四", "phone": "13900002222", "email": "lisi@example.com", "company": "XYZ集团"},
+            # 暂无数据，后续接入 contacts 表
         ]
 
     async def create(self, name: str, phone: str = "", email: str = "",

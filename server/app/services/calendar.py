@@ -25,10 +25,7 @@ class CalendarService:
 
     async def list_events(self, participant: str = "") -> list[dict]:
         """List upcoming events for a participant (mock)."""
-        return [
-            {"title": "需求评审", "datetime": "2026-07-08T14:00:00", "participants": ["张三"]},
-            {"title": "周例会", "datetime": "2026-07-10T10:00:00", "participants": ["张三", "李四"]},
-        ]
+        return []  # 暂无数据，后续接入日历 API
 
 
 calendar_service = CalendarService()
