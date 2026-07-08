@@ -163,22 +163,21 @@ final class AnalysisViewModel: ObservableObject {
         case "execute":
             Task {
                 let success = await DeviceDataProvider().executeAction(card: card)
-                if success {
-                    try? await service.executeAction(cardId: card.id)
-                    // 执行成功 → 关闭洞察，卡片恢复正常
-                    if let idx = cards.firstIndex(where: { $0.id == card.id }) {
-                        cards[idx].insight = nil
-                    }
-                }
+                if success { try? await service.executeAction(cardId: card.id) }
                 await MainActor.run {
                     showToast(success ? "已执行: \(action.label)" : "执行失败，请检查权限", success: success)
+                    if success {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                            withAnimation { self.cards.removeAll { $0.id == card.id } }
+                        }
+                    }
                 }
             }
         case "dismiss":
-            if let idx = cards.firstIndex(where: { $0.id == card.id }) {
-                cards[idx].insight = nil
+            showToast("已关闭", success: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                withAnimation { self.cards.removeAll { $0.id == card.id } }
             }
-            print("[VM] 洞察已关闭 card=\(card.id)")
         default: break
         }
     }
@@ -248,6 +247,9 @@ final class AnalysisViewModel: ObservableObject {
         updateStatus(card, to: .cancelled)
         Task { try? await service.cancelAction(cardId: card.id, cardType: card.type, cardSummary: card.summary) }
         showToast("已取消：\(CardIconHelper.label(for: card.type))", success: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            withAnimation { self.cards.removeAll { $0.id == card.id } }
+        }
     }
 
     // MARK: - 私有辅助方法
