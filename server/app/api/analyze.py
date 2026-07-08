@@ -261,6 +261,7 @@ async def analyze(request: AnalyzeRequest):
                             id=card_data["id"],
                             type=card_data["type"],
                             summary=card_data["summary"],
+                            fields=card_data.get("fields", {}),
                         )
                         # ActionCard.model_dump() 序列化为 dict，存入累计器
                         cards.append(card.model_dump())

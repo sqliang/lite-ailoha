@@ -161,6 +161,7 @@ final class AnalysisViewModel: ObservableObject {
         print("[VM] handleAction card=\(card.id) action=\(action.label) type=\(action.type)")
         switch action.type {
         case "execute":
+            print("[VM] 执行卡片 | id=\(card.id) type=\(card.type) summary=\(card.summary) fields=\(card.fields)")
             Task {
                 let success = await DeviceDataProvider().executeAction(card: card)
                 if success { try? await service.executeAction(cardId: card.id) }
@@ -184,7 +185,7 @@ final class AnalysisViewModel: ObservableObject {
 
     func confirm(_ card: ActionCard) {
         updateStatus(card, to: .confirmed); save(card)
-        Task { try? await service.confirmAction(cardId: card.id, cardType: card.type, cardSummary: card.summary) }
+        Task { try? await service.confirmAction(cardId: card.id, cardType: card.type, cardSummary: card.summary, cardFields: card.fields) }
         showToast("已确认：\(CardIconHelper.label(for: card.type))", success: true)
         requestInsightIfNeeded(for: card)
     }
@@ -245,7 +246,7 @@ final class AnalysisViewModel: ObservableObject {
     /// - Parameter card: 被取消的动作卡片
     func cancel(_ card: ActionCard) {
         updateStatus(card, to: .cancelled)
-        Task { try? await service.cancelAction(cardId: card.id, cardType: card.type, cardSummary: card.summary) }
+        Task { try? await service.cancelAction(cardId: card.id, cardType: card.type, cardSummary: card.summary, cardFields: card.fields) }
         showToast("已取消：\(CardIconHelper.label(for: card.type))", success: false)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             withAnimation { self.cards.removeAll { $0.id == card.id } }
@@ -284,6 +285,10 @@ final class AnalysisViewModel: ObservableObject {
     private func save(_ card: ActionCard) {
         let saved = SavedCard(context: context)
         saved.id = card.id; saved.type = card.type; saved.summary = card.summary
+        if let fieldsData = try? JSONEncoder().encode(card.fields),
+           let fieldsStr = String(data: fieldsData, encoding: .utf8) {
+            saved.fields = fieldsStr
+        }
         saved.status = CardStatus.confirmed.rawValue; saved.createdAt = Date()
         do { try context.save() } catch { showToast("保存失败", success: false) }
     }

@@ -72,6 +72,7 @@ iOS 确认卡片
           card_id: "create_meeting-abc",
           card_type: "create_meeting",
           card_summary: "为张三创建会议...",
+          card_fields: {title: "产品评审", participants: "[\"张三\"]", datetime: "周四 15:00"},
           device_contacts: [{name, phones, emails, company, title}, ...],
           device_events: [{title, start, end, attendees, location}, ...],
           device_reminders: [{title, dueDate, priority}, ...],
@@ -194,8 +195,9 @@ struct ActionCard {
     let id: String
     let type: String
     let summary: String
+    let fields: [String: String]  // 结构化字段（透传 tool 输出）
     var status: CardStatus = .pending
-    var insight: CardInsight?   // 新增：这张卡片的洞察
+    var insight: CardInsight?     // 这张卡片的洞察
 }
 ```
 

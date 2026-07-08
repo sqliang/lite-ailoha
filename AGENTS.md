@@ -26,6 +26,7 @@ iOS photo picker → resize/compress image → POST base64 image + user_context 
 → LLM_MODEL powers subagents for domain extraction
 → SSE stream back: event:struct → event:card × N → event:insight → event:done
 → iOS renders ActionCards → user confirm/cancel → POST /api/v1/actions/{id}/*
+→ user clicks execute → DeviceDataProvider writes structured fields to system apps
 ```
 
 ### Multi-Model Configuration
@@ -52,8 +53,9 @@ Every analysis session produces data visible in **three places**:
 - **`AnalysisViewModel`** is the central state machine: pick image → send to server → consume SSE. Owns `@Published` cards, insight, structure, toast state.
 - **`AnalysisService`** wraps an `AsyncThrowingStream<StreamEvent, Error>` for SSE. `useMock = true` for offline dev.
 - **`ImageProcessor`** resizes to max 1024px before upload (bandwidth optimization).
-- **Card types** are canonical across the stack: `create_meeting`, `create_contact`, `update_contact`, `create_reminder`.
-- **Core Data** stores only confirmed cards (`SavedCard` entity).
+- **`DeviceDataProvider`** reads device contacts/calendar/reminders via CNContactStore + EKEventStore, and writes structured card `fields` to system apps.
+- **`Persistence`** stores confirmed cards via Core Data (`SavedCard` entity with `id`, `type`, `summary`, `fields`, `status`, `createdAt`).
+- **Card types** are canonical across the stack: `create_meeting`, `create_contact`, `update_contact`, `create_reminder`. Each `ActionCard` carries `id`, `type`, `summary`, and `fields` (dict of structured tool output).
 
 ### Server Layer (FastAPI + DeepAgents)
 
@@ -65,10 +67,12 @@ Every analysis session produces data visible in **three places**:
 
 Dual-model architecture built on `deepagents`:
 
-- **`deep_agent.py`** — `LiteAilohaAgent` class. Two LLM instances: `_vision_llm` (VISION_MODEL, for Coordinator) and `_text_llm` (LLM_MODEL, for subagents). Coordinator prompts include the screenshot as a multimodal message.
-- **`subagents.py`** — Three subagents (Meeting/Contact/Reminder) use `_text_llm`. They receive structured text, never images.
-- **`prompts.py`** — Five prompts: `COORDINATOR_PROMPT` (vision: structure conversation, then delegate), plus 3 subagent prompts + structurer prompt.
-- **`tools/`** — Domain-split. `structure.py` calls VISION_MODEL to parse chat screenshots into structured JSON. `meeting.py`, `contact.py`, `reminder.py`, `insight.py` for domain extraction.
+- **`deep_agent.py`** — `LiteAilohaAgent` class. Uses `llm_factory.get_text_llm()` for Coordinator. Includes `_parse_stream_event()` to map `on_tool_end` events → SSE types, `_clean_fields()` to strip internal fields from tool outputs, and `_build_summary()` for Chinese summary generation.
+- **`llm_factory.py`** — Unified LLM singleton management: `get_vision_llm()` for VISION_MODEL and `get_text_llm()` for LLM_MODEL.
+- **`subagents/`** — Three subagents (Meeting/Contact/Reminder) defined as dicts with name, description, system_prompt, tools. Each gets `get_text_llm()` injected by `get_all_subagents()`.
+- **`prompts/`** — Four prompts: `COORDINATOR_PROMPT` + 3 subagent prompts (meeting/contact/reminder).
+- **`tools/`** — Domain-split. `structure.py` (calls VISION_MODEL to parse screenshots), `meeting.py` (create_meeting), `contact.py` (create/update/query contacts), `reminder.py` (create_reminder), `insight.py` (generate_insight).
+- **`validators/`** — Pydantic schemas for tool output validation.
 
 ### Services & Storage (`server/app/services/`, `server/app/storage/`)
 
@@ -139,6 +143,7 @@ echo "=== All checks passed ==="
 ## Key Conventions
 
 - **Card types MUST be consistent** across Swift and Python. The four canonical types are `create_meeting`, `create_contact`, `update_contact`, `create_reminder`. Never introduce a new type without updating both `Models.swift` + `schemas/response.py` + `tools/__init__.py` + all prompt files.
+- **Card `fields`**: Each `ActionCard` carries a `fields` dict with the structured tool output. Fields are cleaned server-side (`_clean_fields()` strips `action`/`status` keys, serializes arrays to JSON strings). iOS `DeviceDataProvider` maps `fields` to system API properties (CNContact/EKEvent/EKReminder) instead of using `summary` text.
 - **SSE protocol**: every event must have an `event:` line, an `id:` line (monotonically increasing integer), and a `data:` line with valid JSON. The `done` event signals stream end.
 - **Endpoint paths**: the server uses `/api/v1/` prefix. The iOS client `endpoint` URL must match exactly.
 - **Mock-first on iOS**: `AnalysisService.useMock = true` works without a running server. Mock cards exercise all 4 action types.

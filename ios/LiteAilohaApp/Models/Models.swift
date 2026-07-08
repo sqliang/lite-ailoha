@@ -105,6 +105,8 @@ struct ActionCard: Identifiable, Codable, Equatable, Sendable {
     let type: String
     /// 动作摘要描述（人类可读的中文摘要，如 "为张三创建会议「产品评审」"）
     let summary: String
+    /// 结构化字段，透传 tool 返回的完整 JSON（数组值已由服务端序列化为 JSON 字符串）
+    let fields: [String: String]
     /// 卡片确认状态（纯客户端状态，不从 JSON 解码）
     var status: CardStatus = .pending
 
@@ -112,7 +114,7 @@ struct ActionCard: Identifiable, Codable, Equatable, Sendable {
     var insight: CardInsight? = nil
 
     /// 显式声明编解码键，排除客户端状态
-    enum CodingKeys: String, CodingKey { case id, type, summary }
+    enum CodingKeys: String, CodingKey { case id, type, summary, fields }
 }
 
 /// 单张卡片的洞察结果，由阶段二 InsightAgent 返回。

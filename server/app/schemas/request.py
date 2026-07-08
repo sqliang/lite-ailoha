@@ -38,3 +38,4 @@ class ActionRequest(BaseModel):
     session_id: str = Field(default="", description="分析会话 ID")
     type: str = Field(default="", description="卡片类型")
     summary: str = Field(default="", description="卡片摘要")
+    fields: dict = Field(default_factory=dict, description="卡片结构化字段")

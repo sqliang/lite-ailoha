@@ -77,6 +77,7 @@ struct PersistenceController {
             attr("id", .stringAttributeType, optional: false),   // 主键，必填
             attr("type", .stringAttributeType),
             attr("summary", .stringAttributeType),
+            attr("fields", .stringAttributeType),
             attr("status", .stringAttributeType),
             attr("createdAt", .dateAttributeType)
         ]
@@ -102,6 +103,8 @@ final class SavedCard: NSManagedObject {
     @NSManaged var type: String?
     /// 动作摘要（对应 ActionCard.summary）
     @NSManaged var summary: String?
+    /// 结构化字段（对应 ActionCard.fields，JSON 字符串）
+    @NSManaged var fields: String?
     /// 确认状态（通常为 CardStatus.confirmed.rawValue）
     @NSManaged var status: String?
     /// 用户确认的时间戳

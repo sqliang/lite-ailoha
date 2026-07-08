@@ -1,31 +1,62 @@
 # Lite Ailoha
 
-AI 驱动的聊天截图分析工具 — 拍一张聊天截图，自动识别会议、联系人、提醒事项，生成可确认的动作卡片。
+AI 驱动的聊天截图分析工具 — 上传聊天截图，自动识别会议、联系人、提醒事项，生成可确认的动作卡片。确认后结合设备端数据生成洞察建议，一键写入系统 APP。
 
 ## 工作原理
 
 ```
-  iOS 拍照/选图 → 压缩 → POST base64 → SSE 流式返回
-  ┌──────────┐       ┌──────────────────────────────────────┐
-  │ 聊天截图  │  →    │  VISION_MODEL 看图 → 结构化对话 JSON   │
-  │ + 补充文字 │       │  LLM_MODEL 子Agent → 动作卡片 × N     │
-  └──────────┘       │  SSE: struct → card → insight → done │
-                     └──────────────────────────────────────┘
+┌─ 阶段一：分析 ──────────────────────────────────────────────────────┐
+│                                                                      │
+│  iOS 拍照/选图                                                       │
+│    │  ImageProcessor 压缩 (max 1024px)                                │
+│    │  POST /api/v1/analyze  {image: base64, user_context: "..."}     │
+│    ▼                                                                 │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  Coordinator (LLM_MODEL)                                      │   │
+│  │    ├─ structure_conversation 工具 ── 内部调 VISION_MODEL 看图  │   │
+│  │    │    └→ SSE event:struct   {participants, messages}        │   │
+│  │    │                                                           │   │
+│  │    ├─ task("meeting-agent")   ┐                                │   │
+│  │    ├─ task("contact-agent")   ├─ 并行，用 LLM_MODEL 提取      │   │
+│  │    └─ task("reminder-agent")  ┘    └→ SSE event:card × N      │   │
+│  │                                       {id, type, summary,      │   │
+│  │                                        fields: {结构化数据}}    │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│    └→ SSE event:done                                                 │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
-  ┌──────────────────────────────────────────────────────────┐
-  │  iOS 实时渲染 ActionCard 列表 + 确认/取消 + Toast 反馈     │
-  └──────────────────────────────────────────────────────────┘
+┌─ 用户交互 ──────────────────────────────────────────────────────────┐
+│                                                                      │
+│  iOS 渲染 ActionCard 列表（类型图标 + 摘要 + 确认/取消按钮）           │
+│  用户逐张确认或取消                                                   │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─ 阶段二：洞察 + 执行 ────────────────────────────────────────────────┐
+│                                                                      │
+│  确认卡片后：                                                         │
+│    ├─ DeviceDataProvider 读取设备端通讯录/日历/提醒                    │
+│    ├─ POST /sessions/{id}/insight  → SSE event:insight               │
+│    │    Agent 逐卡片分析冲突、重复、可行性                              │
+│    │                                                                  │
+│    └─ 用户点击「执行」                                                 │
+│         DeviceDataProvider 用 card.fields 结构化字段                   │
+│         写入 CNContactStore / EKEventStore / EKReminder               │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 识别的动作类型
 
-| 类型 | 中文标签 | 示例 |
-|------|---------|------|
-| `create_meeting` | 创建会议 | "为张三创建会议「产品评审」，时间 周四 15:00" |
-| `create_contact` | 创建联系人 | "添加联系人：张三（产品经理，138xxxx）" |
-| `update_contact` | 更新联系人 | "更新联系人「李四」的部门为「产品部」" |
-| `create_reminder` | 创建提醒 | "会前 30 分钟提醒准备演示文稿" |
+| 类型 | 中文标签 | summary 示例 | fields 包含的结构化字段 |
+|------|---------|-------------|----------------------|
+| `create_meeting` | 创建会议 | "为张三创建会议「产品评审」，时间 周四 15:00" | `title`, `participants`, `datetime`, `notes` |
+| `create_contact` | 创建联系人 | "添加联系人：张三（产品经理，138xxxx）" | `name`, `phone`, `email`, `company`, `title`, `notes` |
+| `update_contact` | 更新联系人 | "更新联系人「李四」的部门为「产品部」" | `name`, `field`, `value` |
+| `create_reminder` | 创建提醒 | "会前 30 分钟提醒准备演示文稿" | `title`, `content`, `due_date` |
 
 ## 快速开始
 
@@ -70,7 +101,7 @@ LLM_BASE_URL=https://api.openai.com/v1
 ```bash
 make run
 # Server running at http://localhost:8080
-# 日志实时输出: [1/7] 收到请求 → [2/7] 验证 → ... → [6/7] 持久化
+# 日志实时输出: [1/7] 收到请求 → [2/7] 验证 → ... → [7/7] 完成
 ```
 
 验证：
@@ -107,17 +138,26 @@ lite-ailoha/
 │   └── README.md               # 服务端详细文档
 ├── ios/                        # iOS SwiftUI 客户端
 │   └── LiteAilohaApp/
-│       ├── ContentView.swift       # 主界面
-│       ├── AnalysisViewModel.swift # 中央状态机
-│       ├── AnalysisService.swift   # HTTP + SSE 解析
-│       ├── Models.swift            # 数据模型
-│       ├── ActionCardView.swift    # 动作卡片 + Toast
-│       ├── Persistence.swift       # Core Data 持久化
-│       └── Services/
-│           └── ImageProcessor.swift # 图片压缩
+│       ├── App/ActionCardsApp.swift         # App 入口
+│       ├── Models/Models.swift              # 数据模型 + SSE 事件枚举
+│       ├── Services/
+│       │   ├── AnalysisService.swift        # HTTP + SSE 解析
+│       │   ├── ImageProcessor.swift         # 图片压缩
+│       │   ├── Persistence.swift            # Core Data 持久化
+│       │   └── DeviceDataProvider.swift     # 系统 APP 写入 + 通讯录/日历读取
+│       ├── ViewModels/AnalysisViewModel.swift # 中央状态机
+│       └── Views/
+│           ├── AnalysisView.swift           # 主界面
+│           ├── Cards/ActionCardView.swift   # 动作卡片
+│           ├── Status/StatusSection.swift   # 状态指示器
+│           ├── Insight/InsightSection.swift # 洞察区域
+│           └── Input/InputSection.swift     # 图片选择 + 文字输入
 ├── docs/
-│   ├── PRD.md                  # 产品需求文档
-│   └── ARCHITECTURE.md         # 架构设计文档
+│   ├── PRD.md                    # 产品需求文档
+│   ├── ARCHITECTURE.md           # 高层架构设计
+│   ├── DESIGN.md                 # 详细架构设计（当前参考）
+│   ├── INSIGHT_DESIGN.md         # 阶段二洞察方案设计
+│   └── CARD_FIELDS_DESIGN.md     # 卡片结构化字段透传方案
 ├── CLAUDE.md                   # 开发指南
 ├── Makefile                    # install/run/test/lint/clean
 └── .env.example                # 配置模板
@@ -127,21 +167,31 @@ lite-ailoha/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/v1/analyze` | SSE 流式分析（struct → card × N → insight → done） |
-| `POST` | `/api/v1/actions/{id}/confirm` | 确认动作卡片 |
-| `POST` | `/api/v1/actions/{id}/cancel` | 取消动作卡片 |
-| `GET` | `/api/v1/sessions/{id}` | 查询历史分析结果 |
+| `POST` | `/api/v1/analyze` | **阶段一** SSE: meta → status → struct → card × N → done |
+| `POST` | `/api/v1/actions/{id}/confirm` | 确认卡片（写入 `confirmed_actions` 表） |
+| `POST` | `/api/v1/actions/{id}/cancel` | 取消卡片 |
+| `POST` | `/api/v1/actions/{id}/execute` | 标记卡片已执行 |
+| `POST` | `/api/v1/sessions/{id}/insight` | **阶段二** SSE: insight → done |
+| `GET` | `/api/v1/sessions/{id}` | 查询完整会话（含 session_state） |
 | `GET` | `/health` | 健康检查 |
 
 ### SSE 事件序列
 
+阶段一（`POST /api/v1/analyze`）：
 ```
-event:struct   →  {"participants": [...], "messages": [...]}
-event:card     →  {"card": {"id": "...", "type": "create_meeting", "summary": "..."}}
+event:meta     →  {"session_id": "uuid"}
+event:status   →  {"step": "structuring", "message": "正在理解聊天内容…"}
+event:struct   →  {"event": "struct", "session_state": "STRUCTURED", "participants": [...], "messages": [...]}
+event:status   →  {"step": "extracting", "message": "正在识别待办事项…"}
+event:card     →  {"event": "card", "session_state": "EXTRACTING", "card": {"id": "...", "type": "create_meeting", "summary": "...", "fields": {...}}}
    ... (×N)
-event:insight  →  {"insight": "张三已有 2 个待定会议..."}
-event:done     →  {}
-event:error    →  {"code": "...", "message": "..."} （仅异常时）
+event:done     →  {"event": "done", "session_state": "READY"}
+```
+
+阶段二（`POST /api/v1/sessions/{id}/insight`）：
+```
+event:insight  →  {"event": "insight", "session_state": "GENERATING", "insight": "..."}
+event:done     →  {"event": "done", "session_state": "COMPLETED"}
 ```
 
 ## 技术栈
@@ -156,11 +206,13 @@ event:error    →  {"code": "...", "message": "..."} （仅异常时）
 
 ## 架构
 
-详细架构设计见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。核心思路：
+详细架构设计见 [`docs/DESIGN.md`](docs/DESIGN.md)。核心思路：
 
-- **VISION_MODEL**（Coordinator）：看图理解聊天截图，调用 `structure_conversation` 工具输出结构化 JSON
-- **LLM_MODEL**（3 个 Subagent）：纯文本推理，从结构化 JSON 中提取会议/联系人/提醒
-- **SSE 流式返回**：事件逐个推送，卡片实时渲染
+- **Coordinator（LLM_MODEL）**：任务规划与分发，调用 `structure_conversation` 工具和三个子 Agent，合成结果
+- **structure_conversation 工具（内部调 VISION_MODEL）**：看图理解聊天截图，输出结构化对话 JSON（参与人 + 消息时间线）
+- **3 个 Subagent（LLM_MODEL）**：纯文本领域推理，分别从结构化 JSON 中提取会议/联系人/提醒，输出带 `fields` 结构化字段的动作卡片
+- **两阶段人在回路**：阶段一 analyze → 用户确认/取消 → 阶段二 insight + 写入系统 APP
+- **SSE 流式返回**：事件逐个推送，卡片实时渲染，带 `session_state` 驱动客户端状态机
 - **质量评估回路**：每次分析写入 `analyze_sessions` 表，可事后对照截图评估准确率
 
 ## 更多文档
@@ -168,7 +220,10 @@ event:error    →  {"code": "...", "message": "..."} （仅异常时）
 | 文档 | 内容 |
 |------|------|
 | [`docs/PRD.md`](docs/PRD.md) | 产品需求与设计 |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 架构设计与关键决策 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 高层架构设计与关键决策 |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | 详细架构设计（当前参考） |
+| [`docs/INSIGHT_DESIGN.md`](docs/INSIGHT_DESIGN.md) | 阶段二洞察方案 |
+| [`docs/CARD_FIELDS_DESIGN.md`](docs/CARD_FIELDS_DESIGN.md) | 卡片结构化字段透传方案 |
 | [`server/README.md`](server/README.md) | 服务端详细文档 |
 | [`ios/README.md`](ios/README.md) | iOS 客户端详细文档 |
 | [`CLAUDE.md`](CLAUDE.md) | 开发指南与规范 |
