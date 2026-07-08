@@ -13,12 +13,26 @@ struct AnalysisView: View {
             VStack(spacing: 0) {
                 // Agent 状态（pinned 顶部，始终可见）
                 if vm.isAnalyzing || vm.sessionState != nil {
-                    StatusSection(
-                        state: vm.sessionState,
-                        structure: vm.structure,
-                        cardCount: vm.cards.count,
-                        isAnalyzing: vm.isAnalyzing
-                    )
+                    Group {
+                        if let sp = vm.structure {
+                            NavigationLink(destination: SessionDetailView(structure: sp)) {
+                                StatusSection(
+                                    state: vm.sessionState,
+                                    structure: vm.structure,
+                                    cardCount: vm.cards.count,
+                                    isAnalyzing: vm.isAnalyzing
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            StatusSection(
+                                state: vm.sessionState,
+                                structure: vm.structure,
+                                cardCount: vm.cards.count,
+                                isAnalyzing: vm.isAnalyzing
+                            )
+                        }
+                    }
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                 }
@@ -26,24 +40,6 @@ struct AnalysisView: View {
                 // 内容区域（可滚动）
                 ScrollView {
                     VStack(spacing: 16) {
-
-                        // 会话详情入口
-                        if vm.hasStructure, let sp = vm.structure {
-                            NavigationLink {
-                                SessionDetailView(structure: sp)
-                            } label: {
-                                HStack {
-                                    Label("查看分析详情", systemImage: "text.bubble")
-                                        .font(.subheadline)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(12)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                            }
-                        }
 
                         // 卡片列表（核心区域）
                         if !vm.cards.isEmpty {

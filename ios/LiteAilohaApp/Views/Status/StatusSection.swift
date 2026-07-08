@@ -92,7 +92,8 @@ struct StatusSection: View {
                 icon: "text.bubble.fill",
                 label: "理解聊天内容",
                 status: stepStatus(for: .structure),
-                detail: structure.map { "\($0.participants.count)人, \($0.messages.count)条消息" }
+                detail: structure.map { "\($0.participants.count)人, \($0.messages.count)条消息" },
+                link: structure.map { _ in AnyView(Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)) }
             )
 
             Divider().padding(.leading, 36)
@@ -187,7 +188,7 @@ struct StatusSection: View {
     }
 
     @ViewBuilder
-    private func stepRow(icon: String, label: String, status: StepStatus, detail: String?) -> some View {
+    private func stepRow(icon: String, label: String, status: StepStatus, detail: String?, link: AnyView? = nil) -> some View {
         HStack(spacing: 12) {
             // 图标 + 状态
             ZStack {
@@ -219,6 +220,7 @@ struct StatusSection: View {
             }
 
             Spacer()
+            if let link { link }
         }
         .padding(.vertical, 10)
     }
