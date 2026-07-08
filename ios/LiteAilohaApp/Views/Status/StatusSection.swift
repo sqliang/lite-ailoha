@@ -125,9 +125,9 @@ struct StatusSection: View {
             let step = stepFromState
             guard let pool = messagePool[step], pool.count > 1 else { return }
             var i = 1
-            while !Task.isCancelled {
+            while !Task.isCancelled && isAnalyzing {
                 try? await Task.sleep(for: .seconds(3))
-                if Task.isCancelled { return }
+                if Task.isCancelled || !isAnalyzing { return }
                 withAnimation { messageIndex = i }
                 i = (i + 1) % pool.count
                 if i == 0 { i = 1 }
