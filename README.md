@@ -48,8 +48,7 @@ AI 驱动的聊天截图分析工具 — 上传聊天截图，自动识别会议
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
-
-### 识别的动作类型
+识别的动作类型
 
 | 类型 | 中文标签 | summary 示例 | fields 包含的结构化字段 |
 |------|---------|-------------|----------------------|
@@ -57,6 +56,37 @@ AI 驱动的聊天截图分析工具 — 上传聊天截图，自动识别会议
 | `create_contact` | 创建联系人 | "添加联系人：张三（产品经理，138xxxx）" | `name`, `phone`, `email`, `company`, `title`, `notes` |
 | `update_contact` | 更新联系人 | "更新联系人「李四」的部门为「产品部」" | `name`, `field`, `value` |
 | `create_reminder` | 创建提醒 | "会前 30 分钟提醒准备演示文稿" | `title`, `content`, `due_date` |
+
+### 架构设计
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    iOS Client (SwiftUI + MVVM)                    │
+│  图片选择/压缩 → SSE 消费 → ActionCard 渲染 → 确认/取消 → 执行     │
+└─────────────────────────────┬────────────────────────────────────┘
+                              │ HTTP + SSE
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│              Python Server (FastAPI + DeepAgents)                 │
+│                                                                   │
+│  api/analyze.py          api/actions.py        api/sessions.py   │
+│  阶段一 SSE 流              确认/取消/执行         阶段二 洞察      │
+│       │                         │                     │           │
+│       ▼                         ▼                     ▼           │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │              LiteAilohaAgent (deep_agent.py)               │  │
+│  │  create_deep_agent(                                        │  │
+│  │    model = get_text_llm(),       ← Coordinator 大脑        │  │
+│  │    tools = STRUCTURE_TOOLS,      ← structure_conversation  │  │
+│  │    subagents = get_all_subagents() ← meeting/contact/reminder│ │
+│  │  )                                                          │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                   │
+│  storage/database.py          schemas/ (Pydantic models)          │
+│  SQLite (WAL mode)            request.py / response.py            │
+└──────────────────────────────────────────────────────────────────┘
+```
+
 
 ## 快速开始
 
